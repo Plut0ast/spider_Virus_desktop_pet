@@ -5,8 +5,9 @@ using System.Numerics;
 namespace WebCrawler;
 
 /// <summary>
-/// A small buzzing bug for the spiders to hunt. It wanders in jittery flight,
-/// lands now and then, dodges the cursor, and leaves after about a minute.
+/// A small buzzing bug for the spiders to hunt. It only flies over open desktop:
+/// it wanders in jittery flight, lands now and then, dodges the cursor, and
+/// disappears after about a minute or if it ends up over a window.
 /// </summary>
 sealed class Fly : IDisposable
 {
@@ -24,25 +25,18 @@ sealed class Fly : IDisposable
     readonly Bitmap bmp = new(Size, Size, PixelFormat.Format32bppPArgb);
     readonly Graphics g;
     Vector2 vel, target;
-    float landed, age, facing;
-    bool leaving;
+    float landed, age, facing, overWindowFor;
 
     public bool Landed => landed > 0;
 
-    public Fly(World world)
+    public Fly(World world, Vector2 start)
     {
         this.world = world;
         rng = world.Rng;
         s = world.S;
         g = Graphics.FromImage(bmp);
-
-        var screens = world.UsableScreens();
-        if (screens.Length == 0) screens = Screen.AllScreens;
-        var b = screens[rng.Next(screens.Length)].WorkingArea;
-        bool left = rng.NextDouble() < 0.5;
-        Pos = new Vector2(left ? b.Left - 20 : b.Right + 20, b.Top + (float)rng.NextDouble() * b.Height);
-        target = new Vector2(b.Left + b.Width * (0.2f + (float)rng.NextDouble() * 0.6f),
-                             b.Top + b.Height * (0.2f + (float)rng.NextDouble() * 0.6f));
+        Pos = start;
+        target = NewTarget();
         win.Show();
     }
 
@@ -51,27 +45,20 @@ sealed class Fly : IDisposable
         if (Caught || Gone) return;
         age += dt;
 
-        // Never bother anyone watching or playing something fullscreen.
-        if (world.IsBlocked(Pos)) { Gone = true; return; }
+        if (age > Lifetime || world.IsBlocked(Pos)) { Gone = true; return; }
+
+        // Flies stay over the desktop; one that drifts over a window soon gives up.
+        overWindowFor = world.Windows.IsFreeDesktop(Pos) ? 0 : overWindowFor + dt;
+        if (overWindowFor > 0.6f) { Gone = true; return; }
 
         var fromCursor = Pos - world.Cursor;
         float cursorDist = fromCursor.Length();
         if (cursorDist < 70 * s && cursorDist > 0.1f)
         {
             landed = 0;
-            target = Pos + fromCursor / cursorDist * 220 * s;
+            var dodge = Pos + fromCursor / cursorDist * 220 * s;
+            target = world.Windows.IsFreeDesktop(dodge) ? dodge : NewTarget();
         }
-
-        if (!leaving && age > Lifetime)
-        {
-            leaving = true;
-            var sc = Screen.FromPoint(new Point((int)Pos.X, (int)Pos.Y)).Bounds;
-            var center = new Vector2(sc.Left + sc.Width / 2f, sc.Top + sc.Height / 2f);
-            var away = Pos - center;
-            target = Pos + (away.Length() > 1 ? Vector2.Normalize(away) : Vector2.UnitX) * 3000;
-            landed = 0;
-        }
-        if (leaving && !World.OnAnyScreen(Pos)) { Gone = true; return; }
 
         if (landed > 0)
         {
@@ -82,7 +69,7 @@ sealed class Fly : IDisposable
 
         var to = target - Pos;
         float d = to.Length();
-        if (!leaving && d < 15 * s)
+        if (d < 15 * s)
         {
             if (rng.NextDouble() < 0.35) landed = 1 + (float)rng.NextDouble() * 3;
             target = NewTarget();
@@ -94,13 +81,17 @@ sealed class Fly : IDisposable
         if (vel.Length() > 5) facing = MathF.Atan2(vel.Y, vel.X);
     }
 
+    // Somewhere nearby that's still open desktop.
     Vector2 NewTarget()
     {
-        var area = Screen.FromPoint(new Point((int)Pos.X, (int)Pos.Y)).WorkingArea;
-        float a = (float)(rng.NextDouble() * Math.PI * 2);
-        float r = (80 + (float)rng.NextDouble() * 180) * s;
-        var p = Pos + new Vector2(MathF.Cos(a), MathF.Sin(a)) * r;
-        return new Vector2(Math.Clamp(p.X, area.Left + 20, area.Right - 20), Math.Clamp(p.Y, area.Top + 20, area.Bottom - 20));
+        for (int tries = 0; tries < 12; tries++)
+        {
+            float a = (float)(rng.NextDouble() * Math.PI * 2);
+            float r = (80 + (float)rng.NextDouble() * 180) * s;
+            var p = Pos + new Vector2(MathF.Cos(a), MathF.Sin(a)) * r;
+            if (world.Windows.IsFreeDesktop(p)) return p;
+        }
+        return Pos;
     }
 
     Vector2 RandomInDisk(float r)

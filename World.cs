@@ -22,6 +22,8 @@ sealed class World : IDisposable
     // A selection box being dragged out on the desktop or in a File Explorer window.
     public bool Selecting { get; private set; }
     public RectangleF SelectionRect { get; private set; }
+    // True for the one frame where a selection box was just let go.
+    public bool SelectionReleased { get; private set; }
     Vector2 selectStart;
     bool buttonWasDown, selectStartedOnSurface;
     readonly StringBuilder className = new(64);
@@ -82,7 +84,8 @@ sealed class World : IDisposable
     {
         foreach (var web in Webs)
         {
-            web.SetHidden(IsBlocked(web.Hub));
+            // Webs belong on the desktop: hide one while a window sits over it.
+            web.SetHidden(IsBlocked(web.Hub) || Windows.CoveredPoints(web.Hub, web.Radius) >= 3);
             web.Render();
         }
         foreach (var fly in Flies) fly.Render();
@@ -90,7 +93,7 @@ sealed class World : IDisposable
 
     public void SpawnFly()
     {
-        if (UsableScreens().Length > 0) Flies.Add(new Fly(this));
+        if (Windows.TryFindFreeDesktopPoint(Rng, out var start)) Flies.Add(new Fly(this, start));
     }
 
     public void ClearWebs()
@@ -109,7 +112,9 @@ sealed class World : IDisposable
         }
         buttonWasDown = down;
 
+        bool wasSelecting = Selecting;
         Selecting = down && selectStartedOnSurface && Vector2.Distance(Cursor, selectStart) > 4;
+        SelectionReleased = wasSelecting && !down;
         if (Selecting)
             SelectionRect = RectangleF.FromLTRB(
                 Math.Min(selectStart.X, Cursor.X), Math.Min(selectStart.Y, Cursor.Y),
@@ -126,7 +131,12 @@ sealed class World : IDisposable
         if (pid == (uint)Environment.ProcessId) return false;
         className.Clear();
         Native.GetClassName(root, className, className.Capacity);
-        return className.ToString() is "Progman" or "WorkerW" or "CabinetWClass";
+        string cls = className.ToString();
+        bool ok = cls is "Progman" or "WorkerW" or "CabinetWClass";
+        // Last press only, for diagnosing box-select on unusual desktops.
+        try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "WebCrawler-select.txt"), $"{DateTime.Now:T} root={cls} boxSelect={ok}"); }
+        catch (IOException) { }
+        return ok;
     }
 
     /// <summary>On a screen that has something fullscreen on it.</summary>
@@ -244,25 +254,76 @@ sealed class DesktopWindows
         return IsUsable(from) && IsUsable(to);
     }
 
-    /// <summary>A corner to tuck a web into: a window corner or a corner of a screen.</summary>
-    public bool TryPickCorner(Random rng, out Vector2 corner, out Vector2 inward)
+    /// <summary>Open desktop: on a free screen and not under any app window.</summary>
+    public bool IsFreeDesktop(Vector2 p)
     {
-        corner = inward = default;
-        Rectangle r;
-        var usable = UsableScreens();
-        if (Rects.Count > 0 && rng.NextDouble() < 0.6) r = Rects[rng.Next(Math.Min(5, Rects.Count))];
-        else if (usable.Length > 0) r = usable[rng.Next(usable.Length)].WorkingArea;
-        else return false;
+        if (!IsUsable(p)) return false;
+        foreach (var r in Rects)
+            if (r.Contains((int)p.X, (int)p.Y)) return false;
+        return true;
+    }
 
-        int which = rng.Next(4);
-        corner = which switch
+    // How many of nine points across a circle (centre plus rim) are covered by windows.
+    public int CoveredPoints(Vector2 hub, float radius)
+    {
+        int covered = IsFreeDesktop(hub) ? 0 : 1;
+        for (int i = 0; i < 8; i++)
         {
-            0 => new Vector2(r.Left, r.Top),
-            1 => new Vector2(r.Right, r.Top),
-            2 => new Vector2(r.Left, r.Bottom),
-            _ => new Vector2(r.Right, r.Bottom),
-        };
-        inward = Vector2.Normalize(new Vector2(which % 2 == 0 ? 1 : -1, which < 2 ? 1 : -1));
-        return IsUsable(corner + inward * 4);
+            float a = i * MathF.PI / 4;
+            if (!IsFreeDesktop(hub + new Vector2(MathF.Cos(a), MathF.Sin(a)) * radius * 0.9f)) covered++;
+        }
+        return covered;
+    }
+
+    /// <summary>
+    /// A spot where a whole web fits on open desktop: tucked into a screen corner
+    /// if one is clear, otherwise any clear patch of wallpaper.
+    /// </summary>
+    public bool TryFindWebSpot(Random rng, float radius, out Vector2 hub)
+    {
+        hub = default;
+        var usable = UsableScreens();
+        if (usable.Length == 0) return false;
+
+        for (int tries = 0; tries < 30; tries++)
+        {
+            var area = usable[rng.Next(usable.Length)].WorkingArea;
+            if (tries % 2 == 0)
+            {
+                int which = rng.Next(4);
+                var corner = which switch
+                {
+                    0 => new Vector2(area.Left, area.Top),
+                    1 => new Vector2(area.Right, area.Top),
+                    2 => new Vector2(area.Left, area.Bottom),
+                    _ => new Vector2(area.Right, area.Bottom),
+                };
+                var inward = Vector2.Normalize(new Vector2(which % 2 == 0 ? 1 : -1, which < 2 ? 1 : -1));
+                hub = corner + inward * radius * 1.1f;
+            }
+            else
+            {
+                hub = new Vector2(
+                    area.Left + radius + (float)rng.NextDouble() * Math.Max(1, area.Width - radius * 2),
+                    area.Top + radius + (float)rng.NextDouble() * Math.Max(1, area.Height - radius * 2));
+            }
+            if (CoveredPoints(hub, radius) == 0) return true;
+        }
+        return false;
+    }
+
+    /// <summary>A random point of open desktop, for a fly to appear at.</summary>
+    public bool TryFindFreeDesktopPoint(Random rng, out Vector2 p)
+    {
+        p = default;
+        var usable = UsableScreens();
+        if (usable.Length == 0) return false;
+        for (int tries = 0; tries < 40; tries++)
+        {
+            var area = usable[rng.Next(usable.Length)].WorkingArea;
+            p = new Vector2(area.Left + (float)rng.NextDouble() * area.Width, area.Top + (float)rng.NextDouble() * area.Height);
+            if (IsFreeDesktop(p)) return true;
+        }
+        return false;
     }
 }

@@ -94,6 +94,8 @@ sealed class Spider : IDisposable
     bool away;
 
     float selectedFor;   // how long a selection box has been covering it
+    bool sleepAfterSpin; // spinning a quick web to sleep in
+    Web sleepWeb;        // the web it is asleep in, if any
     float startledFlash; // the "!" shown after being woken
 
     public Spider(World world)
@@ -203,11 +205,11 @@ sealed class Spider : IDisposable
         {
             Think(dt);
             Walk(dt);
-            float wantH = mode switch { Mode.Hide => -5 * s, Mode.Sleep => -6 * s, Mode.Groom => 2 * s, _ => 0 };
+            float wantH = mode switch { Mode.Hide => -5 * s, Mode.Sleep => sleepWeb != null ? -2 * s : -6 * s, Mode.Groom => 2 * s, _ => 0 };
             extraH += (wantH - extraH) * Math.Min(1, dt * 6);
         }
 
-        float wantReach = mode switch { Mode.Hide => 0.8f, Mode.Sleep => 0.55f, _ => 1f };
+        float wantReach = mode switch { Mode.Hide => 0.8f, Mode.Sleep => sleepWeb != null ? 0.9f : 0.55f, _ => 1f };
         reachMul += (wantReach - reachMul) * Math.Min(1, dt * 4);
 
         float turnRate = WrapAngle(heading - prevHeading) / Math.Max(dt, 1e-4f);
@@ -248,9 +250,20 @@ sealed class Spider : IDisposable
 
     void Think(float dt)
     {
-        if (mode == Mode.Sleep) return;
+        if (mode == Mode.Sleep)
+        {
+            // Tearing the web it's sleeping in wakes it with a jolt.
+            if (sleepWeb != null && (sleepWeb.Disturbed || !world.Webs.Contains(sleepWeb)))
+            {
+                startledFlash = 0.8f;
+                Startle();
+            }
+            return;
+        }
 
-        if (mode is not (Mode.Flee or Mode.Dizzy) && CursorThreat())
+        // Sweeping a selection box over it shouldn't scare it off.
+        bool drowsy = mode == Mode.Spin && sleepAfterSpin;
+        if (mode is not (Mode.Flee or Mode.Dizzy) && !drowsy && !world.Selecting && CursorThreat())
         {
             StartFlee(1.1f);
             return;
@@ -411,22 +424,46 @@ sealed class Spider : IDisposable
         pauseLeft = 0;
     }
 
-    // Dragging a selection box over the spider for a moment sends it to sleep.
+    // Holding a selection box over the spider for a moment, or letting go with it
+    // inside the box, sends it to sleep.
     void CheckSelectionBox(float dt)
     {
+        if (mode is Mode.Held or Mode.Thrown or Mode.Sleep || (mode == Mode.Spin && sleepAfterSpin)) { selectedFor = 0; return; }
         var body = BodyOnScreen();
-        bool covered = world.Selecting && mode is not (Mode.Held or Mode.Thrown or Mode.Sleep)
-                       && world.SelectionRect.Contains(body.X, body.Y);
-        selectedFor = covered ? selectedFor + dt : 0;
-        if (selectedFor > 0.4f) StartSleep();
+        bool inside = world.SelectionRect.Contains(body.X, body.Y) || world.SelectionRect.Contains(pos.X, pos.Y);
+
+        if (world.SelectionReleased && inside) { StartSleep(); return; }
+        selectedFor = world.Selecting && inside ? selectedFor + dt : 0;
+        if (selectedFor > 0.25f) StartSleep();
     }
 
     void StartSleep()
     {
-        DropTasks();
-        mode = Mode.Sleep;
-        pauseLeft = 0;
         selectedFor = 0;
+        if (mode == Mode.Spin && sleepAfterSpin) return;
+        DropTasks();
+        pauseLeft = 0;
+        vel = Vector2.Zero;
+
+        float radius = (50 + (float)rng.NextDouble() * 20) * s;
+        if (world.Windows.CoveredPoints(pos, radius) == 0)
+        {
+            // On open desktop: spin a quick web on the spot, then curl up in the middle of it.
+            if (world.Webs.Count >= MaxWebs)
+            {
+                world.Webs[0].Dispose();
+                world.Webs.RemoveAt(0);
+            }
+            web = new Web(pos, radius, rng, s);
+            world.Webs.Add(web);
+            web.Render();
+            win.KeepOnTop();
+            mode = Mode.Spin;
+            spinStage = 1;
+            sleepAfterSpin = true;
+            return;
+        }
+        mode = Mode.Sleep;
     }
 
     void StartGroom()
@@ -447,6 +484,8 @@ sealed class Spider : IDisposable
         if (prey != null) { prey.Hunter = null; prey = null; }
         web = null;
         spinStage = 0;
+        sleepAfterSpin = false;
+        sleepWeb = null;
     }
 
     // ---------- webs ----------
@@ -455,11 +494,8 @@ sealed class Spider : IDisposable
     {
         if (webCooldown > 0 || world.Webs.Count >= MaxWebs) return false;
         webCooldown = 5; // try again soon if no good spot turns up
-        if (!world.Windows.TryPickCorner(rng, out var corner, out var inward)) return false;
-
         float radius = (55 + (float)rng.NextDouble() * 45) * s;
-        var hub = corner + inward * radius * 0.8f;
-        if (!world.IsUsable(hub)) return false;
+        if (!world.Windows.TryFindWebSpot(rng, radius, out var hub)) return false;
 
         spinHub = hub;
         spinRadius = radius;
@@ -494,7 +530,16 @@ sealed class Spider : IDisposable
 
             case 1: // turning on the spot while laying silk
                 heading += dt * 1.6f;
-                web.SetProgress(web.Progress + dt / 7f);
+                web.SetProgress(web.Progress + dt / (sleepAfterSpin ? 3.5f : 7f));
+                if (web.Progress >= 1 && sleepAfterSpin)
+                {
+                    sleepWeb = web;
+                    web = null;
+                    spinStage = 0;
+                    sleepAfterSpin = false;
+                    mode = Mode.Sleep;
+                    return;
+                }
                 if (web.Progress >= 1)
                 {
                     spinStage = 2;

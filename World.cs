@@ -312,6 +312,22 @@ sealed class DesktopWindows
         return false;
     }
 
+    /// <summary>The closest spot to <paramref name="from"/> where a whole web fits on open desktop.</summary>
+    public bool TryFindNearestWebSpot(Vector2 from, float radius, float s, out Vector2 hub)
+    {
+        hub = from;
+        if (CoveredPoints(from, radius) == 0) return true;
+        // Search outward in rings until a clear spot turns up.
+        for (float d = 40 * s; d < 2400 * s; d += 40 * s)
+        for (int k = 0; k < 16; k++)
+        {
+            float a = k * MathF.PI / 8;
+            hub = from + new Vector2(MathF.Cos(a), MathF.Sin(a)) * d;
+            if (CoveredPoints(hub, radius) == 0) return true;
+        }
+        return false;
+    }
+
     /// <summary>A random point of open desktop, for a fly to appear at.</summary>
     public bool TryFindFreeDesktopPoint(Random rng, out Vector2 p)
     {

@@ -446,23 +446,19 @@ sealed class Spider : IDisposable
         vel = Vector2.Zero;
 
         float radius = (50 + (float)rng.NextDouble() * 20) * s;
-        if (world.Windows.CoveredPoints(pos, radius) == 0)
+        if (world.Windows.TryFindNearestWebSpot(pos, radius, s, out var hub))
         {
-            // On open desktop: spin a quick web on the spot, then curl up in the middle of it.
-            if (world.Webs.Count >= MaxWebs)
-            {
-                world.Webs[0].Dispose();
-                world.Webs.RemoveAt(0);
-            }
-            web = new Web(pos, radius, rng, s);
-            world.Webs.Add(web);
-            web.Render();
-            win.KeepOnTop();
-            mode = Mode.Spin;
-            spinStage = 1;
+            // Wander sleepily to the nearest open bit of desktop, spin a quick web, and sleep in it.
+            spinHub = hub;
+            spinRadius = radius;
+            target = hub;
+            spinStage = 0;
             sleepAfterSpin = true;
+            speedMul = 0.7f;
+            mode = Mode.Spin;
             return;
         }
+        // No desktop showing anywhere: curl up where it is.
         mode = Mode.Sleep;
     }
 
@@ -520,6 +516,12 @@ sealed class Spider : IDisposable
             case 0: // walking to the hub
                 if (Vector2.Distance(pos, spinHub) < 10 * s)
                 {
+                    if (sleepAfterSpin && world.Webs.Count >= MaxWebs)
+                    {
+                        // Make room: the oldest web goes.
+                        world.Webs[0].Dispose();
+                        world.Webs.RemoveAt(0);
+                    }
                     web = new Web(spinHub, spinRadius, rng, s);
                     world.Webs.Add(web);
                     web.Render();
@@ -966,6 +968,17 @@ sealed class Spider : IDisposable
     public void Render()
     {
         if (away) return;
+
+        // Asleep in a web that a window now covers: hidden along with the web.
+        bool tucked = mode == Mode.Sleep && sleepWeb != null
+                      && world.Windows.CoveredPoints(sleepWeb.Hub, sleepWeb.Radius) >= 3;
+        if (tucked)
+        {
+            if (win.Visible) win.Hide();
+            return;
+        }
+        if (!win.Visible) win.Show();
+
         var origin = new Point((int)pos.X - WinSize / 2, (int)pos.Y - WinSize / 2);
         g.Clear(Color.Transparent);
 
@@ -1095,7 +1108,7 @@ sealed class Spider : IDisposable
 
         if (mode == Mode.Wrap) DrawWrapping(o, bodyH);
         if (mode == Mode.Dizzy) DrawDizzy(head, nodeFill, ring);
-        if (mode == Mode.Sleep) DrawSleeping(head);
+        if (mode == Mode.Sleep || (mode == Mode.Spin && sleepAfterSpin)) DrawSleeping(head);
         if (startledFlash > 0) DrawStartled(head);
     }
 

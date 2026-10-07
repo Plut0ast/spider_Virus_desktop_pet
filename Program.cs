@@ -31,6 +31,8 @@ sealed class CrawlerContext : ApplicationContext
     readonly Stopwatch clock = Stopwatch.StartNew();
     readonly float scale;
     readonly World world;
+    readonly SavedState saved = SavedState.Load();
+    float saveTimer = 30, tooltipTimer;
     readonly ToolStripMenuItem pauseItem;
     double last;
     float escHeld;
@@ -110,6 +112,16 @@ sealed class CrawlerContext : ApplicationContext
         else escHeld = 0;
 
         if (settings.Paused) return;
+
+        saveTimer -= dt;
+        if (saveTimer <= 0) { saveTimer = 30; SaveState(); }
+        tooltipTimer -= dt;
+        if (tooltipTimer <= 0)
+        {
+            tooltipTimer = 1;
+            tray.Text = spiders.Count > 0 ? $"Web Crawler: comfort {spiders[0].Comfort:P0}" : "Web Crawler";
+        }
+
         world.Update(dt);
         foreach (var spider in spiders) spider.Update(dt);
         world.Render();
@@ -119,12 +131,26 @@ sealed class CrawlerContext : ApplicationContext
     void AddSpider()
     {
         if (spiders.Count >= MaxSpiders) return;
-        spiders.Add(new Spider(world));
+        int slot = spiders.Count;
+        float comfort = slot < saved.Comfort.Count ? saved.Comfort[slot] : 0f;
+        spiders.Add(new Spider(world, comfort));
+    }
+
+    void SaveState()
+    {
+        // Keep entries for spiders that were removed so re-adding one brings it back as it was.
+        for (int i = 0; i < spiders.Count; i++)
+        {
+            if (i < saved.Comfort.Count) saved.Comfort[i] = spiders[i].Comfort;
+            else saved.Comfort.Add(spiders[i].Comfort);
+        }
+        saved.Save();
     }
 
     void RemoveSpider()
     {
         if (spiders.Count == 0) return;
+        SaveState();
         var last = spiders[^1];
         spiders.RemoveAt(spiders.Count - 1);
         last.Dispose();
@@ -133,6 +159,7 @@ sealed class CrawlerContext : ApplicationContext
     void Quit()
     {
         timer.Stop();
+        SaveState();
         foreach (var spider in spiders) spider.Dispose();
         spiders.Clear();
         world.Dispose();

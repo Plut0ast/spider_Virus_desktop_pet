@@ -95,11 +95,17 @@ sealed class Spider : IDisposable
 
     float selectedFor;   // how long a selection box has been covering it
     bool sleepAfterSpin; // spinning a quick web to sleep in
+
+    // How comfortable it is with you: 0 is wary (red), 1 is at ease (green).
+    public float Comfort { get; private set; }
+    float shownComfort;  // eases toward Comfort so the colour shifts gradually
+    float comfortPulse;  // ring that flashes when it warms to you
     Web sleepWeb;        // the web it is asleep in, if any
     float startledFlash; // the "!" shown after being woken
 
-    public Spider(World world)
+    public Spider(World world, float comfort)
     {
+        Comfort = shownComfort = Math.Clamp(comfort, 0, 1);
         this.world = world;
         settings = world.Settings;
         rng = world.Rng;
@@ -194,7 +200,10 @@ sealed class Spider : IDisposable
         webCooldown -= dt;
         huntCooldown -= dt;
         startledFlash -= dt;
+        comfortPulse = Math.Max(0, comfortPulse - dt * 1.5f);
+        shownComfort += (Comfort - shownComfort) * Math.Min(1, dt * 0.8f);
         CheckSelectionBox(dt);
+        KeepingCompany(dt);
         float prevHeading = heading;
 
         HandleInput();
@@ -255,9 +264,13 @@ sealed class Spider : IDisposable
             // Tearing the web it's sleeping in wakes it with a jolt.
             if (sleepWeb != null && (sleepWeb.Disturbed || !world.Webs.Contains(sleepWeb)))
             {
+                AddComfort(-0.03f);
                 startledFlash = 0.8f;
                 Startle();
+                return;
             }
+            // Resting safely in its own web.
+            if (sleepWeb != null) AddComfort(dt * 0.0005f);
             return;
         }
 
@@ -265,6 +278,7 @@ sealed class Spider : IDisposable
         bool drowsy = mode == Mode.Spin && sleepAfterSpin;
         if (mode is not (Mode.Flee or Mode.Dizzy) && !drowsy && !world.Selecting && CursorThreat())
         {
+            AddComfort(-0.02f);
             StartFlee(1.1f);
             return;
         }
@@ -412,7 +426,8 @@ sealed class Spider : IDisposable
         if (d > 220 * s || d < 1) return false;
         var v = world.CursorVel;
         float speed = v.Length();
-        if (speed < 1400 * s) return false;
+        // The more at ease it is, the faster a rush has to be to scare it.
+        if (speed < 1400 * s * (1 + Comfort * 1.2f)) return false;
         return Vector2.Dot(v / speed, toMe / d) > 0.6f;
     }
 
@@ -422,6 +437,46 @@ sealed class Spider : IDisposable
         mode = Mode.Flee;
         modeLeft = seconds;
         pauseLeft = 0;
+    }
+
+    void AddComfort(float amount)
+    {
+        float before = Comfort;
+        Comfort = Math.Clamp(Comfort + amount, 0, 1);
+        if (amount >= 0.02f && Comfort > before) comfortPulse = 1;
+    }
+
+    // A calm cursor resting nearby slowly wins it over.
+    void KeepingCompany(float dt)
+    {
+        if (mode is Mode.Held or Mode.Thrown or Mode.Flee or Mode.Sleep) return;
+        bool near = Vector2.Distance(world.Cursor, BodyOnScreen()) < 120 * s;
+        bool calm = world.CursorVel.Length() < 300 * s;
+        if (near && calm) AddComfort(dt * 0.004f);
+    }
+
+    // Body colour runs from red through orange and yellow to green as it gets comfortable.
+    Color BodyColor(int alpha = 255)
+    {
+        float hue = (347 + shownComfort * 148) % 360;
+        return FromHsv(alpha, hue, 0.75f, 1f);
+    }
+
+    static Color FromHsv(int alpha, float h, float sat, float val)
+    {
+        float c = val * sat;
+        float x = c * (1 - MathF.Abs(h / 60 % 2 - 1));
+        float m = val - c;
+        (float r, float g, float b) = (int)(h / 60) switch
+        {
+            0 => (c, x, 0f),
+            1 => (x, c, 0f),
+            2 => (0f, c, x),
+            3 => (0f, x, c),
+            4 => (x, 0f, c),
+            _ => (c, 0f, x),
+        };
+        return Color.FromArgb(alpha, (int)((r + m) * 255), (int)((g + m) * 255), (int)((b + m) * 255));
     }
 
     // Holding a selection box over the spider for a moment, or letting go with it
@@ -507,6 +562,7 @@ sealed class Spider : IDisposable
         if (web != null && (!world.Webs.Contains(web) || web.Disturbed))
         {
             // Someone poked or cleared its web: get out of there.
+            AddComfort(-0.03f);
             StartFlee(1.2f);
             return;
         }
@@ -632,6 +688,8 @@ sealed class Spider : IDisposable
             for (int i = 0; i < 3; i++)
                 glitches.Add(Glitch.Spawn(rng, Mouth + RandomInDisk(20 * s), s));
 
+        // A good meal, better still one stored in its own web.
+        AddComfort(home != null ? 0.06f : 0.05f);
         huntCooldown = 12 + (float)rng.NextDouble() * 10;
         PickTarget();
     }
@@ -656,6 +714,7 @@ sealed class Spider : IDisposable
         if (mode == Mode.Sleep)
         {
             // Woken with a jolt.
+            AddComfort(-0.02f);
             startledFlash = 0.8f;
             Startle();
             return;
@@ -674,7 +733,11 @@ sealed class Spider : IDisposable
     {
         pressed = false;
         if (mode == Mode.Held) Throw();
-        else Startle();
+        else
+        {
+            AddComfort(-0.03f);
+            Startle();
+        }
     }
 
     void StartHeld()
@@ -705,6 +768,8 @@ sealed class Spider : IDisposable
         hVel = 80 * s + speed * 0.12f;
         spinVel = ((float)rng.NextDouble() - 0.5f) * (4 + speed / (100 * s));
         afterLanding = speed > 500 * s ? Mode.Dizzy : Mode.Wander;
+        // Set down gently it trusts you a little more; hurled across the screen, a lot less.
+        AddComfort(speed > 500 * s ? -0.06f : 0.01f);
         mode = Mode.Thrown;
     }
 
@@ -1083,9 +1148,9 @@ sealed class Spider : IDisposable
 
         // Body: a red box with a node at its core and one at the head.
         float deg = heading * 180f / MathF.PI;
-        using (var boxPen = new Pen(Palette.BodyRed, 1.8f * s))
+        using (var boxPen = new Pen(BodyColor(), 1.8f * s))
         using (var boxFill = new SolidBrush(Color.FromArgb(170, Palette.NodeFill)))
-        using (var core = new SolidBrush(Palette.BodyRed))
+        using (var core = new SolidBrush(BodyColor()))
         {
             var st = g.Save();
             g.TranslateTransform(center.X, center.Y);
@@ -1093,6 +1158,13 @@ sealed class Spider : IDisposable
             g.FillRectangle(boxFill, -9 * s, -4.5f * s, 18 * s, 9 * s);
             g.DrawRectangle(boxPen, -9 * s, -4.5f * s, 18 * s, 9 * s);
             g.FillEllipse(core, -2 * s, -2 * s, 4 * s, 4 * s);
+            if (comfortPulse > 0)
+            {
+                // A ring that swells and fades when it warms to you.
+                float grow = (1 - comfortPulse) * 8 * s;
+                using var pulse = new Pen(BodyColor((int)(200 * comfortPulse)), 1.4f * s);
+                g.DrawRectangle(pulse, -9 * s - grow, -4.5f * s - grow, 18 * s + grow * 2, 9 * s + grow * 2);
+            }
             g.Restore(st);
         }
         var head = P(pos + fwd * 12 * s, bodyH, o);

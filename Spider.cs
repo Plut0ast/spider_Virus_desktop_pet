@@ -8,6 +8,7 @@ sealed class CrawlerSettings
 {
     public float Intensity = 1f;
     public bool Chase = true;
+    public bool Flies = true;
     public bool Paused;
     public float Speed = 130f;
 }
@@ -21,16 +22,41 @@ sealed class Leg
     public float T, StepDur, Lift, LiftH, Idle;
 }
 
+enum Mode
+{
+    Wander,  // roaming to random spots
+    Chase,   // following the cursor
+    Edge,    // walking along a window border
+    Hide,    // tucked into a corner
+    Groom,   // rubbing its front legs together
+    Flee,    // running from the cursor
+    Held,    // picked up by the cursor
+    Thrown,  // flying through the air after a throw or a startled hop
+    Dizzy,   // wobbling after a hard landing
+    Spin,    // building and sitting in a web
+    Hunt,    // stalking a fly
+    Wrap,    // wrapping a caught fly in silk
+}
+
 /// <summary>
-/// One spider: walks the desktop with an alternating gait and glitches what its feet land on.
+/// One spider: walks the desktop with an alternating gait, glitches what its feet land on,
+/// and reacts to the cursor, windows, flies and its own webs.
 /// </summary>
 sealed class Spider : IDisposable
 {
     const int WinSize = 560;
     const float StepDist = 18f;
+    const int MaxWebs = 4;
     static readonly float[] LegAngles = { 0.6f, 1.2f, 1.95f, 2.5f };
     static readonly float[] LegReach = { 52f, 44f, 38f, 48f };
+    static readonly float[] HipAlong = { 7f, 5f, 3f, 1f };
 
+    // Fake 3D: height shifts a point up the screen, like a camera tilted slightly forward.
+    const float Tilt = 0.5f;
+    // The last leg segment (metatarsus) rises from the foot at about 70 degrees.
+    const float AnkleAngle = 1.2f;
+
+    readonly World world;
     readonly Overlay win = new();
     readonly Bitmap canvas = new(WinSize, WinSize, PixelFormat.Format32bppPArgb);
     readonly Graphics g;
@@ -43,20 +69,35 @@ sealed class Spider : IDisposable
     readonly List<Vector2> trail = new();
 
     Vector2 pos, vel, target;
-    float heading, angVel, time, pauseLeft, chaseLeft, ambientTimer, trailTimer, topTimer;
+    float heading, angVel, time, pauseLeft, ambientTimer, trailTimer, topTimer;
 
-    // Fake 3D: height shifts a point up the screen, like a camera tilted slightly forward.
-    const float Tilt = 0.5f;
-    // The last leg segment (metatarsus) rises from the foot at about 70 degrees.
-    const float AnkleAngle = 1.2f;
+    Mode mode = Mode.Wander;
+    float modeLeft;
+    float speedMul = 1f;
+    float extraH, hVel, spinVel, reachMul = 1f;
+    Mode afterLanding;
 
-    public Spider(CrawlerSettings settings, Random rng, float scale)
+    bool pressed;
+    float pressTime;
+    Vector2 pressCursor, grabOffset;
+
+    Vector2 edgeEnd, cornerInward;
+
+    Web web;
+    int spinStage;
+    Vector2 spinHub;
+    float spinRadius, webCooldown, huntCooldown = 5f;
+    Fly prey;
+
+    public Spider(World world)
     {
-        this.settings = settings;
-        this.rng = rng;
-        s = scale;
+        this.world = world;
+        settings = world.Settings;
+        rng = world.Rng;
+        s = world.S;
         g = Graphics.FromImage(canvas);
         labelFont = new Font("Consolas", 6f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+        webCooldown = 20 + (float)rng.NextDouble() * 25;
 
         // Walk in from the left or right edge of a random screen.
         var screens = Screen.AllScreens;
@@ -81,39 +122,43 @@ sealed class Spider : IDisposable
             legs[i] = leg;
         }
 
+        win.Cursor = Cursors.Hand;
+        win.MouseDown += OnMouseDown;
+        win.MouseUp += OnMouseUp;
         win.Show();
     }
 
-    // ---------- simulation ----------
+    public void KeepOnTop() => win.KeepOnTop();
+
+    // ---------- main loop ----------
 
     public void Update(float dt)
     {
         time += dt;
-        Think(dt);
+        webCooldown -= dt;
+        huntCooldown -= dt;
+        float prevHeading = heading;
 
-        Vector2 to = target - pos;
-        float dist = to.Length();
-        float speed = 0;
-        if (pauseLeft > 0) pauseLeft -= dt;
+        HandleInput();
+
+        if (mode == Mode.Held) UpdateHeld(dt);
+        else if (mode == Mode.Thrown) UpdateThrown(dt);
         else
         {
-            float burst = 0.55f + 0.45f * MathF.Abs(MathF.Sin(time * 4.3f));
-            speed = settings.Speed * s * burst * Math.Clamp(dist / (40 * s), 0, 1);
+            Think(dt);
+            Walk(dt);
+            float wantH = mode switch { Mode.Hide => -5 * s, Mode.Groom => 2 * s, _ => 0 };
+            extraH += (wantH - extraH) * Math.Min(1, dt * 6);
         }
-        Vector2 desired = dist > 0.01f ? to / dist * speed : Vector2.Zero;
-        vel += (desired - vel) * Math.Min(1, dt * 7);
-        pos += vel * dt;
 
-        float prevHeading = heading;
-        if (vel.Length() > 6 * s)
-        {
-            float want = MathF.Atan2(vel.Y, vel.X);
-            heading += WrapAngle(want - heading) * Math.Min(1, dt * 6);
-        }
+        float wantReach = mode == Mode.Hide ? 0.8f : 1f;
+        reachMul += (wantReach - reachMul) * Math.Min(1, dt * 4);
+
         float turnRate = WrapAngle(heading - prevHeading) / Math.Max(dt, 1e-4f);
         angVel += (turnRate - angVel) * Math.Min(1, dt * 10);
 
-        UpdateLegs(dt);
+        if (mode is Mode.Held or Mode.Thrown) UpdateLegsAirborne(dt);
+        else UpdateLegs(dt);
 
         trailTimer -= dt;
         if (trailTimer <= 0)
@@ -127,7 +172,7 @@ sealed class Spider : IDisposable
         if (ambientTimer <= 0)
         {
             ambientTimer = 0.18f;
-            bool active = vel.Length() > 10 * s || chaseLeft > 0;
+            bool active = vel.Length() > 10 * s && mode is not (Mode.Held or Mode.Thrown or Mode.Spin);
             if (active && rng.NextDouble() < 0.12 * settings.Intensity)
                 SpawnGlitch(pos + RandomInDisk(50 * s));
         }
@@ -143,32 +188,120 @@ sealed class Spider : IDisposable
         }
     }
 
+    // ---------- decisions ----------
+
     void Think(float dt)
     {
-        if (chaseLeft > 0)
+        if (mode is not (Mode.Flee or Mode.Dizzy) && CursorThreat())
         {
-            chaseLeft -= dt;
-            var c = Cursor.Position;
-            var cur = new Vector2(c.X, c.Y);
-            var away = pos - cur;
-            float d = away.Length();
-            target = d > 1 ? cur + away / d * 28 * s : cur;
-            if (chaseLeft <= 0) PickTarget();
+            StartFlee(1.1f);
             return;
         }
 
-        if (pauseLeft <= 0 && Vector2.Distance(pos, target) < 12 * s)
+        switch (mode)
         {
-            if (rng.NextDouble() < 0.3) pauseLeft = 0.3f + (float)rng.NextDouble() * 1.2f;
-            PickTarget();
+            case Mode.Wander:
+                speedMul = 1;
+                if (TryStartHunt() || TryStartSpin()) return;
+                if (pauseLeft <= 0 && Vector2.Distance(pos, target) < 12 * s)
+                {
+                    double r = rng.NextDouble();
+                    if (r < 0.15) { StartGroom(); return; }
+                    if (r < 0.4) pauseLeft = 0.3f + (float)rng.NextDouble() * 1.2f;
+                    PickTarget();
+                }
+                break;
+
+            case Mode.Chase:
+            {
+                modeLeft -= dt;
+                var away = pos - world.Cursor;
+                float d = away.Length();
+                target = d > 1 ? world.Cursor + away / d * 28 * s : world.Cursor;
+                if (modeLeft <= 0) PickTarget();
+                break;
+            }
+
+            case Mode.Edge:
+                if (TryStartHunt()) return;
+                if (Vector2.Distance(pos, target) < 10 * s)
+                {
+                    if (Vector2.Distance(target, edgeEnd) < 1)
+                    {
+                        if (rng.NextDouble() < 0.5) StartHide();
+                        else PickTarget();
+                    }
+                    else target = StepToward(target, edgeEnd, (90 + (float)rng.NextDouble() * 120) * s);
+                }
+                break;
+
+            case Mode.Hide:
+            {
+                // Face out of the corner, toward the open screen.
+                float want = MathF.Atan2(cornerInward.Y, cornerInward.X);
+                heading += WrapAngle(want - heading) * Math.Min(1, dt * 4);
+                modeLeft -= dt;
+                if (modeLeft <= 0) PickTarget();
+                break;
+            }
+
+            case Mode.Groom:
+                modeLeft -= dt;
+                if (modeLeft <= 0) PickTarget();
+                break;
+
+            case Mode.Flee:
+            {
+                modeLeft -= dt;
+                var away = pos - world.Cursor;
+                float d = away.Length();
+                target = pos + (d > 1 ? away / d : Dir(heading)) * 220 * s;
+                speedMul = 2.3f;
+                if (modeLeft <= 0) PickTarget();
+                break;
+            }
+
+            case Mode.Dizzy:
+                modeLeft -= dt;
+                heading += MathF.Sin(time * 7) * dt * 5;
+                if (modeLeft <= 0) StartFlee(0.9f);
+                break;
+
+            case Mode.Spin:
+                UpdateSpin(dt);
+                break;
+
+            case Mode.Hunt:
+                UpdateHunt();
+                break;
+
+            case Mode.Wrap:
+                modeLeft -= dt;
+                heading += MathF.Sin(time * 11) * dt * 1.5f;
+                if (modeLeft <= 0) FinishWrap();
+                break;
         }
     }
 
     void PickTarget()
     {
-        if (settings.Chase && rng.NextDouble() < 0.18)
+        mode = Mode.Wander;
+        speedMul = 1;
+        double r = rng.NextDouble();
+
+        if (settings.Chase && r < 0.12)
         {
-            chaseLeft = 3 + (float)rng.NextDouble() * 4;
+            mode = Mode.Chase;
+            modeLeft = 3 + (float)rng.NextDouble() * 4;
+            return;
+        }
+
+        if (r < 0.5 && world.Windows.TryPickEdge(rng, out var from, out var to, out var inward))
+        {
+            mode = Mode.Edge;
+            target = from;
+            edgeEnd = to;
+            cornerInward = inward;
             return;
         }
 
@@ -179,8 +312,8 @@ sealed class Spider : IDisposable
             if (rng.NextDouble() < 0.65)
             {
                 float a = (float)(rng.NextDouble() * Math.PI * 2);
-                float r = (120 + (float)rng.NextDouble() * 400) * s;
-                c = pos + new Vector2(MathF.Cos(a), MathF.Sin(a)) * r;
+                float d = (120 + (float)rng.NextDouble() * 400) * s;
+                c = pos + new Vector2(MathF.Cos(a), MathF.Sin(a)) * d;
             }
             else
             {
@@ -198,7 +331,366 @@ sealed class Spider : IDisposable
         target = new Vector2(p.Left + p.Width / 2f, p.Top + p.Height / 2f);
     }
 
-    Vector2 RestAt(Leg leg, Vector2 at, float h) => at + Dir(h + leg.BaseAngle) * leg.Reach * s;
+    // A fast cursor heading straight at the spider scares it off.
+    bool CursorThreat()
+    {
+        var toMe = pos - world.Cursor;
+        float d = toMe.Length();
+        if (d > 220 * s || d < 1) return false;
+        var v = world.CursorVel;
+        float speed = v.Length();
+        if (speed < 1400 * s) return false;
+        return Vector2.Dot(v / speed, toMe / d) > 0.6f;
+    }
+
+    void StartFlee(float seconds)
+    {
+        DropTasks();
+        mode = Mode.Flee;
+        modeLeft = seconds;
+        pauseLeft = 0;
+    }
+
+    void StartGroom()
+    {
+        mode = Mode.Groom;
+        modeLeft = 1.5f + (float)rng.NextDouble() * 1.5f;
+    }
+
+    void StartHide()
+    {
+        mode = Mode.Hide;
+        modeLeft = 3 + (float)rng.NextDouble() * 5;
+    }
+
+    // Walking away from a web in progress or a fly being stalked.
+    void DropTasks()
+    {
+        if (prey != null) { prey.Hunter = null; prey = null; }
+        web = null;
+        spinStage = 0;
+    }
+
+    // ---------- webs ----------
+
+    bool TryStartSpin()
+    {
+        if (webCooldown > 0 || world.Webs.Count >= MaxWebs) return false;
+        webCooldown = 5; // try again soon if no good spot turns up
+        if (!world.Windows.TryPickCorner(rng, out var corner, out var inward)) return false;
+
+        float radius = (55 + (float)rng.NextDouble() * 45) * s;
+        var hub = corner + inward * radius * 0.8f;
+        if (!World.OnAnyScreen(hub)) return false;
+
+        spinHub = hub;
+        spinRadius = radius;
+        spinStage = 0;
+        mode = Mode.Spin;
+        target = hub;
+        speedMul = 1.2f;
+        return true;
+    }
+
+    void UpdateSpin(float dt)
+    {
+        if (web != null && !world.Webs.Contains(web))
+        {
+            // The web was cleared out from under it.
+            DropTasks();
+            PickTarget();
+            return;
+        }
+
+        switch (spinStage)
+        {
+            case 0: // walking to the hub
+                if (Vector2.Distance(pos, spinHub) < 10 * s)
+                {
+                    web = new Web(spinHub, spinRadius, rng, s);
+                    world.Webs.Add(web);
+                    web.Render();
+                    win.KeepOnTop();
+                    spinStage = 1;
+                }
+                break;
+
+            case 1: // turning on the spot while laying silk
+                heading += dt * 1.6f;
+                web.SetProgress(web.Progress + dt / 7f);
+                if (web.Progress >= 1)
+                {
+                    spinStage = 2;
+                    modeLeft = 6 + (float)rng.NextDouble() * 8;
+                }
+                break;
+
+            case 2: // sitting in the middle, waiting
+                modeLeft -= dt;
+                if (TryStartHunt()) { web = null; spinStage = 0; return; }
+                if (modeLeft <= 0)
+                {
+                    web = null;
+                    spinStage = 0;
+                    webCooldown = 70 + (float)rng.NextDouble() * 80;
+                    PickTarget();
+                }
+                break;
+        }
+    }
+
+    // ---------- hunting ----------
+
+    Vector2 Mouth => pos + Dir(heading) * 14 * s;
+
+    bool TryStartHunt()
+    {
+        if (huntCooldown > 0) return false;
+        Fly best = null;
+        float bestDist = 450 * s;
+        foreach (var f in world.Flies)
+        {
+            if (f.Caught || f.Gone || (f.Hunter != null && f.Hunter != this)) continue;
+            float d = Vector2.Distance(pos, f.Pos);
+            if (d < bestDist) { best = f; bestDist = d; }
+        }
+        if (best == null) return false;
+
+        prey = best;
+        prey.Hunter = this;
+        mode = Mode.Hunt;
+        return true;
+    }
+
+    void UpdateHunt()
+    {
+        if (prey == null || prey.Caught || prey.Gone)
+        {
+            prey = null;
+            PickTarget();
+            return;
+        }
+
+        target = prey.Pos;
+        float d = Vector2.Distance(Mouth, prey.Pos);
+        // Creep up, then pounce.
+        speedMul = d < 90 * s ? 2.6f : 1f;
+
+        if (d > 600 * s)
+        {
+            prey.Hunter = null;
+            prey = null;
+            huntCooldown = 8;
+            PickTarget();
+            return;
+        }
+
+        if (d < 16 * s || Vector2.Distance(pos, prey.Pos) < 16 * s)
+        {
+            prey.Caught = true;
+            prey = null;
+            mode = Mode.Wrap;
+            modeLeft = 1.4f;
+            vel *= 0.2f;
+        }
+    }
+
+    void FinishWrap()
+    {
+        Web home = null;
+        foreach (var w in world.Webs)
+            if (w.Progress >= 1 && w.Holds(pos, 200 * s)) { home = w; break; }
+
+        if (home != null)
+            home.AddBundle(home.Hub + RandomInDisk(home.Radius * 0.6f));
+        else
+            // No web nearby, so it eats the fly and the screen glitches as it goes down.
+            for (int i = 0; i < 3; i++)
+                glitches.Add(Glitch.Spawn(rng, Mouth + RandomInDisk(20 * s), s));
+
+        huntCooldown = 12 + (float)rng.NextDouble() * 10;
+        PickTarget();
+    }
+
+    // ---------- grabbing and throwing ----------
+
+    void HandleInput()
+    {
+        bool near = Vector2.Distance(world.Cursor, BodyOnScreen()) < 22 * s;
+        win.SetClickThrough(!(pressed || mode == Mode.Held || (near && mode != Mode.Thrown)));
+
+        if (!pressed) return;
+        // Safety net in case the button-up message went to another window.
+        if ((Native.GetAsyncKeyState(Native.VK_LBUTTON) & 0x8000) == 0) { Release(); return; }
+        if (mode != Mode.Held && (time - pressTime > 0.15f || Vector2.Distance(world.Cursor, pressCursor) > 6 * s))
+            StartHeld();
+    }
+
+    void OnMouseDown(object sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || mode == Mode.Thrown) return;
+        pressed = true;
+        pressTime = time;
+        pressCursor = world.Cursor;
+    }
+
+    void OnMouseUp(object sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left && pressed) Release();
+    }
+
+    void Release()
+    {
+        pressed = false;
+        if (mode == Mode.Held) Throw();
+        else Startle();
+    }
+
+    void StartHeld()
+    {
+        DropTasks();
+        mode = Mode.Held;
+        grabOffset = BodyOnScreen() - world.Cursor;
+        hVel = 0;
+    }
+
+    void UpdateHeld(float dt)
+    {
+        extraH += (30 * s - extraH) * Math.Min(1, dt * 10);
+        grabOffset *= MathF.Exp(-dt * 6);
+        pos = world.Cursor + grabOffset + new Vector2(0, BodyHeight() * Tilt);
+        vel = world.CursorVel;
+        // The body swings round to trail behind the way it's being dragged.
+        if (vel.Length() > 80 * s)
+            heading += WrapAngle(MathF.Atan2(-vel.Y, -vel.X) - heading) * Math.Min(1, dt * 3);
+    }
+
+    void Throw()
+    {
+        var v = world.CursorVel;
+        float speed = v.Length(), max = 2600 * s;
+        if (speed > max) { v *= max / speed; speed = max; }
+        vel = v;
+        hVel = 80 * s + speed * 0.12f;
+        spinVel = ((float)rng.NextDouble() - 0.5f) * (4 + speed / (100 * s));
+        afterLanding = speed > 500 * s ? Mode.Dizzy : Mode.Wander;
+        mode = Mode.Thrown;
+    }
+
+    // A quick click makes it hop back, then run.
+    void Startle()
+    {
+        DropTasks();
+        var away = pos - world.Cursor;
+        float d = away.Length();
+        var dir = d > 1 ? away / d : -Dir(heading);
+        vel = dir * 320 * s;
+        hVel = 260 * s;
+        spinVel = 0;
+        afterLanding = Mode.Flee;
+        mode = Mode.Thrown;
+    }
+
+    void UpdateThrown(float dt)
+    {
+        pos += vel * dt;
+        // Light drag in the air, strong friction once it skids along the ground.
+        vel *= MathF.Exp(-dt * (extraH > 0.5f ? 0.6f : 4f));
+        hVel -= 1100 * s * dt;
+        extraH += hVel * dt;
+        if (extraH <= 0)
+        {
+            extraH = 0;
+            if (hVel < -150 * s)
+            {
+                hVel = -hVel * 0.35f;
+                SpawnGlitch(pos);
+            }
+            else hVel = 0;
+        }
+        heading += spinVel * dt;
+        spinVel *= MathF.Exp(-dt * 1.2f);
+        KeepOnScreen();
+
+        if (extraH <= 0 && hVel == 0 && vel.Length() < 30 * s) Land();
+    }
+
+    void Land()
+    {
+        vel = Vector2.Zero;
+        spinVel = 0;
+        foreach (var leg in legs)
+        {
+            leg.Foot = RestAt(leg, pos, heading) + RandomInDisk(6 * s);
+            leg.Lift = 0;
+            leg.Stepping = false;
+        }
+
+        switch (afterLanding)
+        {
+            case Mode.Dizzy:
+                mode = Mode.Dizzy;
+                modeLeft = 1.6f;
+                break;
+            case Mode.Flee:
+                StartFlee(1f);
+                break;
+            default:
+                PickTarget();
+                break;
+        }
+    }
+
+    void KeepOnScreen()
+    {
+        var b = Screen.FromPoint(new Point((int)pos.X, (int)pos.Y)).Bounds;
+        if (pos.X < b.Left) { pos.X = b.Left; vel.X = MathF.Abs(vel.X) * 0.5f; }
+        if (pos.X > b.Right) { pos.X = b.Right; vel.X = -MathF.Abs(vel.X) * 0.5f; }
+        if (pos.Y < b.Top) { pos.Y = b.Top; vel.Y = MathF.Abs(vel.Y) * 0.5f; }
+        if (pos.Y > b.Bottom) { pos.Y = b.Bottom; vel.Y = -MathF.Abs(vel.Y) * 0.5f; }
+    }
+
+    // ---------- movement ----------
+
+    void Walk(float dt)
+    {
+        bool standing = mode is Mode.Hide or Mode.Groom or Mode.Dizzy or Mode.Wrap
+                        || (mode == Mode.Spin && spinStage > 0);
+
+        Vector2 to = target - pos;
+        float dist = to.Length();
+        float speed = 0;
+        if (pauseLeft > 0) pauseLeft -= dt;
+        else if (!standing)
+        {
+            float burst = mode == Mode.Flee ? 1f : 0.55f + 0.45f * MathF.Abs(MathF.Sin(time * 4.3f));
+            speed = settings.Speed * s * burst * speedMul * Math.Clamp(dist / (40 * s), 0, 1);
+        }
+
+        Vector2 desired = dist > 0.01f ? to / dist * speed : Vector2.Zero;
+        float accel = mode == Mode.Flee ? 10 : 7;
+        vel += (desired - vel) * Math.Min(1, dt * accel);
+        pos += vel * dt;
+
+        if (!standing && vel.Length() > 6 * s)
+        {
+            float want = MathF.Atan2(vel.Y, vel.X);
+            heading += WrapAngle(want - heading) * Math.Min(1, dt * (mode == Mode.Flee ? 10 : 6));
+        }
+    }
+
+    static Vector2 StepToward(Vector2 from, Vector2 to, float step)
+    {
+        var d = to - from;
+        float len = d.Length();
+        return len <= step ? to : from + d / len * step;
+    }
+
+    // ---------- legs ----------
+
+    Vector2 RestAt(Leg leg, Vector2 at, float h) => at + Dir(h + leg.BaseAngle) * leg.Reach * reachMul * s;
+
+    bool FrontLegBusy(Leg leg) => leg.K == 0 && mode is Mode.Groom or Mode.Wrap;
 
     void UpdateLegs(float dt)
     {
@@ -213,7 +705,7 @@ sealed class Spider : IDisposable
 
         foreach (var leg in legs)
         {
-            if (!leg.Stepping) continue;
+            if (!leg.Stepping || FrontLegBusy(leg)) continue;
             leg.T += dt / leg.StepDur;
             // While the foot is still rising it keeps re-aiming at the predicted spot.
             if (leg.T < 0.5f)
@@ -233,12 +725,15 @@ sealed class Spider : IDisposable
         var right = Dir(heading + MathF.PI / 2);
         foreach (var leg in legs)
         {
+            if (FrontLegBusy(leg)) { PoseFrontLeg(leg, dt); continue; }
             if (leg.Stepping) continue;
+
             Vector2 rest = RestAt(leg, pos, heading);
             float d = Vector2.Distance(leg.Foot, rest);
-            // A foot drifting toward the body midline (after a sharp turn) has to move now.
+            // A foot drifting toward the body midline (after a sharp turn) has to move now,
+            // and so does one still raised from grooming or a landing.
             bool crossing = Vector2.Dot(leg.Foot - pos, right * leg.Side) < 8 * s;
-            bool urgent = crossing || d > StepDist * s * 2.5f;
+            bool urgent = crossing || leg.Lift > 0.5f || d > StepDist * s * 2.5f;
 
             bool want;
             if (moving)
@@ -262,6 +757,39 @@ sealed class Spider : IDisposable
             leg.LiftH = Math.Clamp(d * 0.35f, 4 * s, 12 * s);
             leg.Stepping = true;
             leg.Idle = 0;
+        }
+    }
+
+    // Front legs held up in front of the face: rubbing together when grooming, or
+    // turning a caught fly over and over when wrapping it.
+    void PoseFrontLeg(Leg leg, float dt)
+    {
+        var fwd = Dir(heading);
+        var right = new Vector2(-fwd.Y, fwd.X);
+        bool wrapping = mode == Mode.Wrap;
+        float phase = time * (wrapping ? 22 : 13) + (leg.Side > 0 ? MathF.PI : 0);
+        var focus = pos + fwd * (wrapping ? 16 : 13) * s;
+        var want = focus + fwd * MathF.Sin(phase) * 3 * s + right * leg.Side * (2.5f + MathF.Cos(phase) * 1.5f) * s;
+
+        leg.Stepping = false;
+        leg.Foot = Vector2.Lerp(leg.Foot, want, Math.Min(1, dt * 12));
+        leg.Lift += ((10 + MathF.Sin(phase) * 2) * s - leg.Lift) * Math.Min(1, dt * 12);
+    }
+
+    // Off the ground the legs dangle and kick: wildly when held, tucked in when flying.
+    void UpdateLegsAirborne(float dt)
+    {
+        bool held = mode == Mode.Held;
+        for (int i = 0; i < legs.Length; i++)
+        {
+            var leg = legs[i];
+            leg.Stepping = false;
+            float wiggle = MathF.Sin(time * (held ? 18 : 10) + i * 1.7f);
+            float reach = leg.Reach * s * (held ? 0.85f : 0.6f);
+            var want = pos + Dir(heading + leg.BaseAngle + wiggle * 0.25f) * reach;
+            leg.Foot = Vector2.Lerp(leg.Foot, want, Math.Min(1, dt * 14));
+            float wantLift = Math.Max(0, extraH - (held ? 14 : 6) * s + wiggle * 3 * s);
+            leg.Lift += (wantLift - leg.Lift) * Math.Min(1, dt * 14);
         }
     }
 
@@ -289,8 +817,9 @@ sealed class Spider : IDisposable
     float BodyHeight()
     {
         float lifted = 0;
-        foreach (var leg in legs) lifted += leg.Lift;
-        return (13 + MathF.Sin(time * 2.1f) * 0.6f) * s - lifted * 0.12f;
+        if (mode is not (Mode.Held or Mode.Thrown))
+            foreach (var leg in legs) lifted += leg.Lift;
+        return (13 + MathF.Sin(time * 2.1f) * 0.6f) * s - lifted * 0.12f + extraH;
     }
 
     Vector2 BodyOnScreen() => new(pos.X, pos.Y - BodyHeight() * Tilt);
@@ -325,45 +854,48 @@ sealed class Spider : IDisposable
         if (topTimer <= 0) { topTimer = 2; win.KeepOnTop(); }
     }
 
-    static readonly Color LineBlue = Color.FromArgb(150, 172, 255);
-    static readonly Color BodyRed = Color.FromArgb(255, 64, 96);
-    static readonly float[] HipAlong = { 7f, 5f, 3f, 1f };
-
     void DrawThreads(Point o)
     {
         // Dragline left behind.
         if (trail.Count > 1)
         {
-            using var pen = new Pen(Color.FromArgb(45, LineBlue), 1f);
+            using var pen = new Pen(Color.FromArgb(45, Palette.Line), 1f);
             var pts = new PointF[trail.Count];
             for (int i = 0; i < trail.Count; i++) pts[i] = L(trail[i], o);
             g.DrawLines(pen, pts);
         }
 
         var body = BodyOnScreen();
-        using var nodeFill = new SolidBrush(Color.FromArgb(230, 12, 14, 30));
+        using var nodeFill = new SolidBrush(Color.FromArgb(230, Palette.NodeFill));
+
+        // Dangling from the cursor on a thread while held.
+        if (mode == Mode.Held)
+        {
+            using var pen = new Pen(Color.FromArgb(160, Palette.Line), 1f);
+            g.DrawLine(pen, L(world.Cursor, o), L(body, o));
+        }
 
         // Silk anchored to highlighted spots, ending in a node.
         foreach (var gl in glitches)
         {
             if (!gl.IsAnchor) continue;
             float a = Math.Clamp(1 - gl.Age / gl.Life, 0, 1);
-            using var pen = new Pen(Color.FromArgb((int)(110 * a), LineBlue), 1f);
+            using var pen = new Pen(Color.FromArgb((int)(110 * a), Palette.Line), 1f);
             g.DrawLine(pen, L(body, o), L(gl.Center, o));
-            Node(gl.Center, 1.8f * s, o, nodeFill, pen);
+            NodeAt(L(gl.Center, o), 1.8f * s, nodeFill, pen);
         }
 
         // Flickering burst of edges while it's busy glitching.
         if (glitches.Count > 2)
         {
-            using var pen = new Pen(Color.FromArgb(110, LineBlue), 1f);
+            using var pen = new Pen(Color.FromArgb(110, Palette.Line), 1f);
             for (int i = 0; i < 5; i++)
             {
                 float a = (float)(rng.NextDouble() * Math.PI * 2);
                 float len = (14 + (float)rng.NextDouble() * 30) * s;
                 var end = body + new Vector2(MathF.Cos(a), MathF.Sin(a)) * len;
                 g.DrawLine(pen, L(body, o), L(end, o));
-                Node(end, 1.4f * s, o, nodeFill, pen);
+                NodeAt(L(end, o), 1.4f * s, nodeFill, pen);
             }
         }
     }
@@ -373,12 +905,18 @@ sealed class Spider : IDisposable
         var fwd = Dir(heading);
         var right = new Vector2(-fwd.Y, fwd.X);
         float bodyH = BodyHeight();
+        var center = P(pos, bodyH, o);
 
-        // A soft shadow on the ground under the raised body.
-        using (var shadow = new SolidBrush(Color.FromArgb(55, 0, 0, 0)))
+        // Nearly invisible disc so the cursor can grab the spider around its body.
+        using (var hit = new SolidBrush(Color.FromArgb(1, 0, 0, 0)))
+            g.FillEllipse(hit, center.X - 20 * s, center.Y - 20 * s, 40 * s, 40 * s);
+
+        // A soft shadow on the ground under the raised body, smaller the higher it is.
+        float shrink = Math.Clamp(1 - extraH / (80 * s), 0.4f, 1.1f);
+        using (var shadow = new SolidBrush(Color.FromArgb((int)(55 * shrink), 0, 0, 0)))
         {
             var c = L(pos, o);
-            g.FillEllipse(shadow, c.X - 11 * s, c.Y - 7 * s, 22 * s, 14 * s);
+            g.FillEllipse(shadow, c.X - 11 * s * shrink, c.Y - 7 * s * shrink, 22 * s * shrink, 14 * s * shrink);
         }
 
         var chains = new PointF[legs.Length][];
@@ -391,19 +929,18 @@ sealed class Spider : IDisposable
             chains[i] = new[] { P(hip, bodyH, o), P(knee, kneeZ[i], o), P(ankle, ankleZ, o), P(foot, leg.Lift, o) };
         }
 
-        using var limb = new Pen(Color.FromArgb(235, LineBlue), 1.2f * s) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var limb = new Pen(Color.FromArgb(235, Palette.Line), 1.2f * s) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
         using var ring = new Pen(Color.FromArgb(245, 255, 255, 255), 1.1f * s);
-        using var nodeFill = new SolidBrush(Color.FromArgb(235, 12, 14, 30));
-        using var liftedFill = new SolidBrush(Color.FromArgb(235, LineBlue));
+        using var nodeFill = new SolidBrush(Color.FromArgb(235, Palette.NodeFill));
+        using var liftedFill = new SolidBrush(Color.FromArgb(235, Palette.Line));
 
         foreach (var chain in chains) g.DrawLines(limb, chain);
 
         // Body: a red box with a node at its core and one at the head.
-        var center = P(pos, bodyH, o);
         float deg = heading * 180f / MathF.PI;
-        using (var boxPen = new Pen(BodyRed, 1.8f * s))
-        using (var boxFill = new SolidBrush(Color.FromArgb(170, 12, 14, 30)))
-        using (var core = new SolidBrush(BodyRed))
+        using (var boxPen = new Pen(Palette.BodyRed, 1.8f * s))
+        using (var boxFill = new SolidBrush(Color.FromArgb(170, Palette.NodeFill)))
+        using (var core = new SolidBrush(Palette.BodyRed))
         {
             var st = g.Save();
             g.TranslateTransform(center.X, center.Y);
@@ -413,7 +950,8 @@ sealed class Spider : IDisposable
             g.FillEllipse(core, -2 * s, -2 * s, 4 * s, 4 * s);
             g.Restore(st);
         }
-        NodeAt(P(pos + fwd * 12 * s, bodyH, o), 2.2f * s, nodeFill, ring);
+        var head = P(pos + fwd * 12 * s, bodyH, o);
+        NodeAt(head, 2.2f * s, nodeFill, ring);
 
         for (int i = 0; i < legs.Length; i++)
         {
@@ -421,6 +959,32 @@ sealed class Spider : IDisposable
             NodeAt(chains[i][1], (1.1f + kneeZ[i] / (60 * s)) * s, nodeFill, ring);
             NodeAt(chains[i][2], 1.3f * s, nodeFill, ring);
             NodeAt(chains[i][3], (1.5f + legs[i].Lift / (12 * s)) * s, legs[i].Stepping ? liftedFill : nodeFill, ring);
+        }
+
+        if (mode == Mode.Wrap) DrawWrapping(o, bodyH);
+        if (mode == Mode.Dizzy) DrawDizzy(head, nodeFill, ring);
+    }
+
+    // The caught fly being spun in silk in front of the face.
+    void DrawWrapping(Point o, float bodyH)
+    {
+        var c = P(Mouth, bodyH * 0.6f, o);
+        using var silk = new SolidBrush(Color.FromArgb(220, 235, 240, 255));
+        using var swirl = new Pen(Color.FromArgb(170, Palette.Line), 1f);
+        g.FillEllipse(silk, c.X - 2.5f * s, c.Y - 3.5f * s, 5 * s, 7 * s);
+        float spin = time * 600;
+        for (int i = 0; i < 3; i++)
+            g.DrawArc(swirl, c.X - (5 + i * 2) * s, c.Y - (5 + i * 2) * s, (10 + i * 4) * s, (10 + i * 4) * s, spin + i * 120, 140);
+    }
+
+    // Little nodes circling its head after a hard landing.
+    void DrawDizzy(PointF head, Brush fill, Pen ring)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            float a = time * 6 + i * MathF.PI * 2 / 3;
+            var p = new PointF(head.X + MathF.Cos(a) * 9 * s, head.Y - 6 * s + MathF.Sin(a) * 3 * s);
+            NodeAt(p, 1.3f * s, fill, ring);
         }
     }
 
@@ -475,13 +1039,6 @@ sealed class Spider : IDisposable
         g.DrawEllipse(ring, c.X - r, c.Y - r, r * 2, r * 2);
     }
 
-    void Node(Vector2 p, float r, Point o, Brush fill, Pen ring)
-    {
-        var c = L(p, o);
-        g.FillEllipse(fill, c.X - r, c.Y - r, r * 2, r * 2);
-        g.DrawEllipse(ring, c.X - r, c.Y - r, r * 2, r * 2);
-    }
-
     // ---------- helpers ----------
 
     static PointF L(Vector2 v, Point o) => new(v.X - o.X, v.Y - o.Y);
@@ -504,6 +1061,9 @@ sealed class Spider : IDisposable
 
     public void Dispose()
     {
+        DropTasks();
+        win.MouseDown -= OnMouseDown;
+        win.MouseUp -= OnMouseUp;
         foreach (var gl in glitches) gl.Dispose();
         glitches.Clear();
         win.Close();

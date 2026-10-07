@@ -30,6 +30,7 @@ sealed class CrawlerContext : ApplicationContext
     readonly System.Windows.Forms.Timer timer;
     readonly Stopwatch clock = Stopwatch.StartNew();
     readonly float scale;
+    readonly World world;
     readonly ToolStripMenuItem pauseItem;
     double last;
     float escHeld;
@@ -38,6 +39,7 @@ sealed class CrawlerContext : ApplicationContext
     {
         using (var screen = Graphics.FromHwnd(IntPtr.Zero))
             scale = screen.DpiX / 96f * 1.15f;
+        world = new World(settings, rng, scale);
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("Add spider", null, (_, _) => AddSpider());
@@ -47,6 +49,12 @@ sealed class CrawlerContext : ApplicationContext
         var chase = new ToolStripMenuItem("Chase cursor") { Checked = settings.Chase, CheckOnClick = true };
         chase.CheckedChanged += (_, _) => settings.Chase = chase.Checked;
         menu.Items.Add(chase);
+
+        var flies = new ToolStripMenuItem("Flies") { Checked = settings.Flies, CheckOnClick = true };
+        flies.CheckedChanged += (_, _) => settings.Flies = flies.Checked;
+        menu.Items.Add(flies);
+        menu.Items.Add("Release a fly", null, (_, _) => world.SpawnFly());
+        menu.Items.Add("Clear webs", null, (_, _) => world.ClearWebs());
 
         var intensity = new ToolStripMenuItem("Glitch intensity");
         foreach (var (name, value) in new[] { ("Low", 0.5f), ("Medium", 1f), ("High", 1.7f) })
@@ -102,17 +110,16 @@ sealed class CrawlerContext : ApplicationContext
         else escHeld = 0;
 
         if (settings.Paused) return;
-        foreach (var spider in spiders)
-        {
-            spider.Update(dt);
-            spider.Render();
-        }
+        world.Update(dt);
+        foreach (var spider in spiders) spider.Update(dt);
+        world.Render();
+        foreach (var spider in spiders) spider.Render();
     }
 
     void AddSpider()
     {
         if (spiders.Count >= MaxSpiders) return;
-        spiders.Add(new Spider(settings, rng, scale));
+        spiders.Add(new Spider(world));
     }
 
     void RemoveSpider()
@@ -128,6 +135,7 @@ sealed class CrawlerContext : ApplicationContext
         timer.Stop();
         foreach (var spider in spiders) spider.Dispose();
         spiders.Clear();
+        world.Dispose();
         tray.Visible = false;
         tray.Dispose();
         ExitThread();

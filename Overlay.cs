@@ -27,6 +27,19 @@ sealed class Overlay : Form
 
     protected override bool ShowWithoutActivation => true;
 
+    bool clickThrough = true;
+
+    // The spider turns solid only while the cursor is on it, so it can be grabbed
+    // without ever blocking clicks meant for the windows underneath.
+    public void SetClickThrough(bool on)
+    {
+        if (on == clickThrough || !IsHandleCreated) return;
+        clickThrough = on;
+        long ex = Native.GetWindowLongPtr(Handle, Native.GWL_EXSTYLE).ToInt64();
+        ex = on ? ex | Native.WS_EX_TRANSPARENT : ex & ~(long)Native.WS_EX_TRANSPARENT;
+        Native.SetWindowLongPtr(Handle, Native.GWL_EXSTYLE, new IntPtr(ex));
+    }
+
     // Other always-on-top windows can climb above us; push back to the front now and then.
     public void KeepOnTop() =>
         Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,

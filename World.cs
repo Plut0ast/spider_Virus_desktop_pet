@@ -18,6 +18,13 @@ sealed class World : IDisposable
     public Vector2 Cursor, CursorVel;
     Vector2 lastCursor;
     bool hasCursor;
+
+    // A selection box being dragged out on the desktop or in a File Explorer window.
+    public bool Selecting { get; private set; }
+    public RectangleF SelectionRect { get; private set; }
+    Vector2 selectStart;
+    bool buttonWasDown, selectStartedOnSurface;
+    readonly StringBuilder className = new(64);
     float flyTimer = 12f;
 
     public World(CrawlerSettings settings, Random rng, float scale)
@@ -38,6 +45,7 @@ sealed class World : IDisposable
         hasCursor = true;
 
         Windows.Update(dt);
+        TrackSelection();
 
         if (Settings.Flies)
         {
@@ -89,6 +97,36 @@ sealed class World : IDisposable
     {
         foreach (var web in Webs) web.Dispose();
         Webs.Clear();
+    }
+
+    void TrackSelection()
+    {
+        bool down = (Native.GetAsyncKeyState(Native.VK_LBUTTON) & 0x8000) != 0;
+        if (down && !buttonWasDown)
+        {
+            selectStart = Cursor;
+            selectStartedOnSurface = CanBoxSelectAt(Cursor);
+        }
+        buttonWasDown = down;
+
+        Selecting = down && selectStartedOnSurface && Vector2.Distance(Cursor, selectStart) > 4;
+        if (Selecting)
+            SelectionRect = RectangleF.FromLTRB(
+                Math.Min(selectStart.X, Cursor.X), Math.Min(selectStart.Y, Cursor.Y),
+                Math.Max(selectStart.X, Cursor.X), Math.Max(selectStart.Y, Cursor.Y));
+    }
+
+    // Places where dragging draws a selection box: the desktop and File Explorer windows.
+    bool CanBoxSelectAt(Vector2 p)
+    {
+        var h = Native.WindowFromPoint(new Native.POINT((int)p.X, (int)p.Y));
+        if (h == IntPtr.Zero) return false;
+        var root = Native.GetAncestor(h, Native.GA_ROOT);
+        Native.GetWindowThreadProcessId(root, out uint pid);
+        if (pid == (uint)Environment.ProcessId) return false;
+        className.Clear();
+        Native.GetClassName(root, className, className.Capacity);
+        return className.ToString() is "Progman" or "WorkerW" or "CabinetWClass";
     }
 
     /// <summary>On a screen that has something fullscreen on it.</summary>

@@ -23,6 +23,10 @@ static class Native
     public const int GWL_STYLE = -16;
     public const long WS_CAPTION = 0xC00000;
 
+    public const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int maxCount);

@@ -36,6 +36,7 @@ enum Mode
     Spin,    // building and sitting in a web
     Hunt,    // stalking a fly
     Wrap,    // wrapping a caught fly in silk
+    Sleep,   // curled up after being box-selected; a press wakes it
 }
 
 /// <summary>
@@ -91,6 +92,9 @@ sealed class Spider : IDisposable
 
     // Every screen has something fullscreen on it, so the spider has stepped out of sight.
     bool away;
+
+    float selectedFor;   // how long a selection box has been covering it
+    float startledFlash; // the "!" shown after being woken
 
     public Spider(World world)
     {
@@ -187,6 +191,8 @@ sealed class Spider : IDisposable
         time += dt;
         webCooldown -= dt;
         huntCooldown -= dt;
+        startledFlash -= dt;
+        CheckSelectionBox(dt);
         float prevHeading = heading;
 
         HandleInput();
@@ -197,11 +203,11 @@ sealed class Spider : IDisposable
         {
             Think(dt);
             Walk(dt);
-            float wantH = mode switch { Mode.Hide => -5 * s, Mode.Groom => 2 * s, _ => 0 };
+            float wantH = mode switch { Mode.Hide => -5 * s, Mode.Sleep => -6 * s, Mode.Groom => 2 * s, _ => 0 };
             extraH += (wantH - extraH) * Math.Min(1, dt * 6);
         }
 
-        float wantReach = mode == Mode.Hide ? 0.8f : 1f;
+        float wantReach = mode switch { Mode.Hide => 0.8f, Mode.Sleep => 0.55f, _ => 1f };
         reachMul += (wantReach - reachMul) * Math.Min(1, dt * 4);
 
         float turnRate = WrapAngle(heading - prevHeading) / Math.Max(dt, 1e-4f);
@@ -242,6 +248,8 @@ sealed class Spider : IDisposable
 
     void Think(float dt)
     {
+        if (mode == Mode.Sleep) return;
+
         if (mode is not (Mode.Flee or Mode.Dizzy) && CursorThreat())
         {
             StartFlee(1.1f);
@@ -401,6 +409,24 @@ sealed class Spider : IDisposable
         mode = Mode.Flee;
         modeLeft = seconds;
         pauseLeft = 0;
+    }
+
+    // Dragging a selection box over the spider for a moment sends it to sleep.
+    void CheckSelectionBox(float dt)
+    {
+        var body = BodyOnScreen();
+        bool covered = world.Selecting && mode is not (Mode.Held or Mode.Thrown or Mode.Sleep)
+                       && world.SelectionRect.Contains(body.X, body.Y);
+        selectedFor = covered ? selectedFor + dt : 0;
+        if (selectedFor > 0.4f) StartSleep();
+    }
+
+    void StartSleep()
+    {
+        DropTasks();
+        mode = Mode.Sleep;
+        pauseLeft = 0;
+        selectedFor = 0;
     }
 
     void StartGroom()
@@ -580,6 +606,13 @@ sealed class Spider : IDisposable
     void OnMouseDown(object sender, MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left || mode == Mode.Thrown) return;
+        if (mode == Mode.Sleep)
+        {
+            // Woken with a jolt.
+            startledFlash = 0.8f;
+            Startle();
+            return;
+        }
         pressed = true;
         pressTime = time;
         pressCursor = world.Cursor;
@@ -705,7 +738,7 @@ sealed class Spider : IDisposable
 
     void Walk(float dt)
     {
-        bool standing = mode is Mode.Hide or Mode.Groom or Mode.Dizzy or Mode.Wrap
+        bool standing = mode is Mode.Hide or Mode.Groom or Mode.Dizzy or Mode.Wrap or Mode.Sleep
                         || (mode == Mode.Spin && spinStage > 0);
 
         Vector2 to = target - pos;
@@ -870,7 +903,9 @@ sealed class Spider : IDisposable
         float lifted = 0;
         if (mode is not (Mode.Held or Mode.Thrown))
             foreach (var leg in legs) lifted += leg.Lift;
-        return (13 + MathF.Sin(time * 2.1f) * 0.6f) * s - lifted * 0.12f + extraH;
+        // Slow, deep breaths while asleep.
+        float breath = mode == Mode.Sleep ? MathF.Sin(time * 1.2f) * 1f : MathF.Sin(time * 2.1f) * 0.6f;
+        return (13 + breath) * s - lifted * 0.12f + extraH;
     }
 
     Vector2 BodyOnScreen() => new(pos.X, pos.Y - BodyHeight() * Tilt);
@@ -1015,6 +1050,36 @@ sealed class Spider : IDisposable
 
         if (mode == Mode.Wrap) DrawWrapping(o, bodyH);
         if (mode == Mode.Dizzy) DrawDizzy(head, nodeFill, ring);
+        if (mode == Mode.Sleep) DrawSleeping(head);
+        if (startledFlash > 0) DrawStartled(head);
+    }
+
+    // Z's built from nodes, drifting up from its head and fading.
+    void DrawSleeping(PointF head)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            float t = (time * 0.45f + i / 3f) % 1f;
+            float alpha = MathF.Sin(MathF.PI * t);
+            float w = (3.5f + t * 3) * s;
+            var o = new PointF(head.X + (6 + t * 10) * s, head.Y - (10 + t * 22) * s);
+            var pts = new[] { o, new PointF(o.X + w, o.Y), new PointF(o.X, o.Y + w), new PointF(o.X + w, o.Y + w) };
+            using var pen = new Pen(Color.FromArgb((int)(200 * alpha), Palette.Line), 1.1f * s);
+            using var fill = new SolidBrush(Color.FromArgb((int)(220 * alpha), Palette.NodeFill));
+            using var ring = new Pen(Color.FromArgb((int)(230 * alpha), 255, 255, 255), 0.8f * s);
+            g.DrawLines(pen, pts);
+            foreach (var p in pts) NodeAt(p, 0.9f * s, fill, ring);
+        }
+    }
+
+    // A red "!" over its head right after being woken.
+    void DrawStartled(PointF head)
+    {
+        float alpha = Math.Clamp(startledFlash / 0.8f, 0, 1);
+        using var pen = new Pen(Color.FromArgb((int)(255 * alpha), Palette.BodyRed), 2f * s) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var dot = new SolidBrush(Color.FromArgb((int)(255 * alpha), Palette.BodyRed));
+        g.DrawLine(pen, head.X, head.Y - 24 * s, head.X, head.Y - 14 * s);
+        g.FillEllipse(dot, head.X - 1.4f * s, head.Y - 11 * s, 2.8f * s, 2.8f * s);
     }
 
     // The caught fly being spun in silk in front of the face.

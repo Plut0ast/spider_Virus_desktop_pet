@@ -394,11 +394,10 @@ sealed class Spider : IDisposable
 
     void UpdateSpin(float dt)
     {
-        if (web != null && !world.Webs.Contains(web))
+        if (web != null && (!world.Webs.Contains(web) || web.Disturbed))
         {
-            // The web was cleared out from under it.
-            DropTasks();
-            PickTarget();
+            // Someone poked or cleared its web: get out of there.
+            StartFlee(1.2f);
             return;
         }
 

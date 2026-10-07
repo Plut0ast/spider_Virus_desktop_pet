@@ -7,27 +7,36 @@ namespace WebCrawler;
 /// <summary>
 /// An orb web drawn in the same node style as the spider. It is laid down spokes first,
 /// then the capture spiral from the outside in, and slowly fades after ten minutes.
+/// Clicking its threads tears them; a few clicks clear it away.
 /// </summary>
 sealed class Web : IDisposable
 {
     const float Life = 600f;
     const float Fade = 30f;
+    const float Dissolve = 0.35f;
+    const int ClicksToClear = 4;
 
     public readonly Vector2 Hub;
     public readonly float Radius;
     public float Progress { get; private set; }
-    public bool Dead => age >= Life;
+    public bool Dead => age >= Life || (clearing && clearT >= Dissolve);
+    public bool Disturbed { get; private set; }
 
     readonly float s;
     readonly float[] spokes;
+    readonly float[] spokeLen;     // 0..1 of the radius; clicks cut spokes short
     readonly float[,] jitter;
+    readonly bool[,] broken;       // capture-spiral segments torn by clicks
     readonly int rings;
     readonly List<Vector2> bundles = new();
+    readonly Random rng;
     readonly Overlay win = new();
     readonly Bitmap bmp;
     readonly Graphics g;
     readonly int size;
-    float age;
+    float age, shake, clearT;
+    int health = ClicksToClear;
+    bool clearing;
     bool dirty = true;
     int lastAlpha = -1;
 
@@ -36,16 +45,22 @@ sealed class Web : IDisposable
         Hub = hub;
         Radius = radius;
         this.s = s;
+        this.rng = rng;
 
         int n = 11 + rng.Next(4);
         spokes = new float[n];
+        spokeLen = new float[n];
         float start = (float)(rng.NextDouble() * Math.PI * 2);
         float gap = MathF.PI * 2 / n;
         for (int i = 0; i < n; i++)
+        {
             spokes[i] = start + i * gap + ((float)rng.NextDouble() - 0.5f) * 0.25f * gap;
+            spokeLen[i] = 1;
+        }
 
         rings = Math.Max(4, (int)(radius * 0.8f / (7 * s)));
         jitter = new float[rings, n];
+        broken = new bool[rings, n];
         for (int r = 0; r < rings; r++)
         for (int i = 0; i < n; i++)
             jitter[r, i] = 0.95f + (float)rng.NextDouble() * 0.1f;
@@ -53,6 +68,9 @@ sealed class Web : IDisposable
         size = (int)(radius * 2 + 24 * s);
         bmp = new Bitmap(size, size, PixelFormat.Format32bppPArgb);
         g = Graphics.FromImage(bmp);
+
+        win.Cursor = Cursors.Hand;
+        win.MouseDown += OnMouseDown;
         win.Show();
     }
 
@@ -70,15 +88,74 @@ sealed class Web : IDisposable
         dirty = true;
     }
 
-    public bool Holds(Vector2 p, float margin) => Vector2.Distance(p, Hub) < Radius + margin;
+    public bool Holds(Vector2 p, float margin) => !clearing && Vector2.Distance(p, Hub) < Radius + margin;
 
-    public void Update(float dt)
+    public void Update(float dt, Vector2 cursor)
     {
         age += dt;
         if (Alpha() != lastAlpha) dirty = true;
+
+        // Threads only catch clicks while the cursor is over the web.
+        win.SetClickThrough(clearing || Vector2.Distance(cursor, Hub) > Radius + 8 * s);
+
+        if (shake > 0) { shake -= dt; dirty = true; }
+        if (clearing) { clearT += dt; dirty = true; }
     }
 
-    int Alpha() => age > Life - Fade ? (int)(255 * Math.Clamp((Life - age) / Fade, 0, 1)) : 255;
+    void OnMouseDown(object sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || clearing) return;
+        var origin = new Vector2(Hub.X - size / 2f, Hub.Y - size / 2f);
+        Tear(new Vector2(e.X, e.Y) + origin);
+    }
+
+    void Tear(Vector2 at)
+    {
+        Disturbed = true;
+        shake = 0.3f;
+        dirty = true;
+
+        var local = at - Hub;
+        float reach = 24 * s;
+        int n = spokes.Length;
+
+        // Snap spiral threads near the click.
+        for (int r = 0; r < rings; r++)
+        for (int j = 0; j < n; j++)
+            if (Vector2.Distance(SegmentMid(r, j), local) < reach) broken[r, j] = true;
+
+        // Cut spokes that pass close to the click, at the point where it touched them.
+        for (int i = 0; i < n; i++)
+        {
+            var dir = Dir(spokes[i]);
+            float along = Vector2.Dot(local, dir);
+            if (along <= 0 || along > Radius * spokeLen[i]) continue;
+            if (Vector2.Distance(dir * along, local) < reach * 0.5f)
+                spokeLen[i] = Math.Min(spokeLen[i], Math.Max(0.1f, along / Radius - 0.05f));
+        }
+
+        // Wrapped flies near the click fall out.
+        bundles.RemoveAll(b => Vector2.Distance(b, at) < reach * 1.2f);
+
+        health--;
+        if (health <= 0) clearing = true;
+    }
+
+    Vector2 SegmentMid(int r, int j)
+    {
+        int j2 = (j + 1) % spokes.Length;
+        float rad = RingRadius(r);
+        return (Dir(spokes[j]) * rad * jitter[r, j] + Dir(spokes[j2]) * rad * jitter[r, j2]) / 2;
+    }
+
+    float RingRadius(int r) => Radius * (0.95f - 0.75f * r / Math.Max(1, rings - 1));
+
+    int Alpha()
+    {
+        float k = age > Life - Fade ? Math.Clamp((Life - age) / Fade, 0, 1) : 1;
+        if (clearing) k *= Math.Clamp(1 - clearT / Dissolve, 0, 1);
+        return (int)(255 * k);
+    }
 
     public void Render()
     {
@@ -90,21 +167,27 @@ sealed class Web : IDisposable
         g.Clear(Color.Transparent);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var c = new Vector2(size / 2f, size / 2f);
+        if (shake > 0)
+            c += new Vector2((float)rng.NextDouble() - 0.5f, (float)rng.NextDouble() - 0.5f) * 4 * s * (shake / 0.3f);
         int n = spokes.Length;
 
         using var spokePen = new Pen(Color.FromArgb((int)(120 * k), Palette.Line), 1f);
         using var spiralPen = new Pen(Color.FromArgb((int)(90 * k), Palette.Line), 0.9f);
+        // Nearly invisible, wider strokes along each thread so they're easy to click.
+        using var hitPen = new Pen(Color.FromArgb(clearing ? 0 : 1, 0, 0, 0), 6 * s);
         using var fill = new SolidBrush(Color.FromArgb((int)(230 * k), Palette.NodeFill));
         using var ring = new Pen(Color.FromArgb((int)(220 * k), 255, 255, 255), 1f * s);
 
         float spokeProgress = Math.Clamp(Progress / 0.35f, 0, 1) * n;
         for (int i = 0; i < n; i++)
         {
-            float len = Math.Clamp(spokeProgress - i, 0, 1);
+            float grown = Math.Clamp(spokeProgress - i, 0, 1);
+            float len = Math.Min(grown, spokeLen[i]);
             if (len <= 0) continue;
             var end = c + Dir(spokes[i]) * Radius * len;
+            g.DrawLine(hitPen, c.X, c.Y, end.X, end.Y);
             g.DrawLine(spokePen, c.X, c.Y, end.X, end.Y);
-            if (len >= 1) NodeAt(end, 1.4f * s, fill, ring);
+            if (grown >= 1 && spokeLen[i] >= 1) NodeAt(end, 1.4f * s, fill, ring);
         }
 
         float spiralProgress = Math.Clamp((Progress - 0.35f) / 0.65f, 0, 1);
@@ -112,12 +195,16 @@ sealed class Web : IDisposable
         int drawn = 0;
         for (int r = 0; r < rings && drawn < segments; r++)
         {
-            float rad = Radius * (0.95f - 0.75f * r / Math.Max(1, rings - 1));
+            float rad = RingRadius(r);
             for (int j = 0; j < n && drawn < segments; j++, drawn++)
             {
+                if (broken[r, j]) continue;
                 int j2 = (j + 1) % n;
+                // A spiral thread hangs between two spokes; if either was cut short of it, it's gone too.
+                if (rad > Radius * spokeLen[j] || rad > Radius * spokeLen[j2]) continue;
                 var p1 = c + Dir(spokes[j]) * rad * jitter[r, j];
                 var p2 = c + Dir(spokes[j2]) * rad * jitter[r, j2];
+                g.DrawLine(hitPen, p1.X, p1.Y, p2.X, p2.Y);
                 g.DrawLine(spiralPen, p1.X, p1.Y, p2.X, p2.Y);
             }
         }
@@ -148,6 +235,7 @@ sealed class Web : IDisposable
 
     public void Dispose()
     {
+        win.MouseDown -= OnMouseDown;
         win.Close();
         win.Dispose();
         g.Dispose();

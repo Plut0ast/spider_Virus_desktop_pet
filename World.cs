@@ -60,7 +60,7 @@ sealed class World : IDisposable
 
         for (int i = Webs.Count - 1; i >= 0; i--)
         {
-            Webs[i].Update(dt);
+            Webs[i].Update(dt, Cursor);
             if (Webs[i].Dead)
             {
                 Webs[i].Dispose();

@@ -32,7 +32,7 @@ Press **Win + R**, type `shell:startup`, press Enter, and put a shortcut to `pub
 ### Tray menu
 
 - **Add spider / Remove spider**: up to 6 spiders.
-- **Chase cursor**: lets comfortable spiders follow the cursor now and then.
+- **Affection (follow, tap, rest)**: lets a spider that trusts you come over to tap, follow or rest near the cursor.
 - **Flies**: turns flies on or off.
 - **Release a fly**: sends a fly onto the desktop straight away.
 - **Clear webs**: removes every web.
@@ -59,22 +59,37 @@ Where its feet land, and occasionally around its body while it walks, the real s
 
 It also leaves a faint dragline trail behind it. **Glitch intensity** in the tray menu controls how often this happens.
 
+### Mood in how it moves
+
+- **Wary** (below 50% comfort, see below): it moves in quick, low dashes, freezing between them.
+- **Comfortable** (above 60%): it strolls at an even, unhurried pace and often stops to look around.
+
 ### Getting around your desktop
 
 - **Wandering**: it roams to random spots, sometimes pausing.
 - **Window edges**: about half the time it walks along the title bar or sides of one of your front windows, and may tuck into the corner at the end.
 - **Hiding**: tucked in a corner, it crouches with its legs pulled in and faces out toward the open screen.
 - **Grooming**: when it stops, it sometimes raises its front legs and rubs them together.
-- **Chasing** (comfortable spiders only, if enabled): it follows the cursor for a few seconds at a time.
+
+### Idle fidgets
+
+Whenever it's standing still (pausing, hiding, resting, sitting in a web, peeking), it fidgets every few seconds:
+
+- **Tapping a leg**: lifts a middle leg and taps the ground.
+- **Cleaning a leg**: draws one front leg through its mouth.
+- **Freezing**: goes completely still, holding its breath, then twitches. Wary spiders freeze more often.
+- **Looking around**: turns its body to one side and back.
 
 ### Comfort and mood
 
 Every spider has a comfort level from 0% (red) to 100% (green). A new spider starts at 0%. Comfort is saved every 30 seconds and when you quit, so the spider keeps its colour between runs. It's stored in `%LOCALAPPDATA%\WebCrawler\state.json`.
 
+**It's a relationship you keep up.** Once a full day has passed since you last did something it liked, its comfort drains by 10% per day, measured in real days, whether or not the PC is on. Fully green to wary takes about six days of neglect. Anything that raises comfort resets the clock.
+
 | Raises comfort | Lowers comfort |
 | --- | --- |
 | Eating a fly: +5% (+6% if it stores it in its web) | Throwing it hard: −6% |
-| A calm, still cursor resting near it: about +0.4% a second | Clicking to startle it: −3% |
+| A calm, still cursor resting near it while you're at the PC: about +0.4% a second | Clicking to startle it: −3% |
 | Being set down gently: +1% | Tearing its web while it's in it: −3% |
 | | Pressing it awake: −2% |
 | | Rushing the cursor at it so it flees: −2% |
@@ -89,7 +104,13 @@ Each time it warms to you, a ring in its new colour briefly swells out from its 
 - It never chases the cursor and won't hunt a fly that's near it.
 - Holding the cursor still near a wary spider slowly earns its trust.
 
-**Comfortable (50% and above)**: it roams freely, may follow the cursor, and the greener it is, the faster a cursor rush has to be before it flees.
+**Comfortable (50% and above)**: it roams freely, and the greener it is, the faster a cursor rush has to be before it flees.
+
+**Affection (75% and above)**, if **Affection** is ticked in the tray menu, now and then it comes over to:
+
+- **Tap**: walks up to the cursor and pats it a few times with a front leg.
+- **Follow**: trails the cursor at a polite distance, stopping when it stops and turning to face it.
+- **Rest**: settles down a short way from the cursor for a while, keeping an eye on it.
 
 ### Fleeing and startling
 
@@ -108,11 +129,13 @@ Press and drag it and it hangs from the cursor on a thread, legs kicking, body s
 - Moving a window over a web hides it until the desktop shows again.
 - Clicking a web's threads snaps the threads near the click, cuts any spoke it hits and makes the web shudder. Wrapped flies near the click drop out. The fourth click clears what's left.
 - Disturbing a web it's sitting in sends it running.
+- **Repairs**: about 15 seconds after a web is torn (but not cleared), the spider comes back, turns on the hub and mends it thread by thread until it's whole again. Tearing it while it works sends it running. Four quick clicks still clear a web for good.
 
 ### Flies
 
 - Flies appear over open desktop every 20–50 seconds (at most 2 at a time) and only ever fly over desktop. One that drifts over a window vanishes; if no desktop is visible, no flies come.
 - They buzz around, land now and then, dodge the cursor, and leave after about a minute.
+- A fly that flies through a finished web can get **stuck**. It shudders and the web trembles. Any spider within reach drops what it's doing and sprints over, even if it has just eaten. A fly that isn't collected tears free after about 25 seconds.
 - The spider stalks a nearby fly, then pounces. It wraps the catch in silk with its front legs. If one of its finished webs is nearby, the wrapped fly is stored on the web; otherwise it eats it and the screen glitches as it goes down.
 
 ### Sleep
@@ -122,6 +145,15 @@ Press and drag it and it hangs from the cursor on a thread, legs kicking, body s
 - If no desktop is visible anywhere, it curls up and sleeps where it is.
 - While asleep it ignores everything else. A window moved over its web hides it along with the web.
 - Pressing it, or clicking its web, wakes it with a jolt: a red **!** appears, it hops back and runs off.
+
+### Noticing what you're doing
+
+- **Typing**: when you've been typing for a bit and it's at least 50% comfortable, it comes over to the window you're typing in, sits on its top edge with its front legs hooked over, and watches where you're typing (in apps that report their text cursor; otherwise it just looks down into the window). It stays while you keep typing.
+- **Peeking**: every minute or so, if it's at least 30% comfortable, it may wander over and peek over the top edge of the window you're using for a few seconds. It loses interest if you move or switch windows.
+- **New and moved windows**: when a window opens or moves nearby, it gives a little startled hop, then walks over to the window's edge, looks around and faces it. A very wary spider runs off to hide instead.
+- **When you're away**: after a minute without input it ranges much further across your screens. If you come back after more than two minutes and it hasn't gone far, you'll find it somewhere new.
+
+These only use whether there has been keyboard or mouse input and where windows are. It never reads what you type.
 
 ### Fullscreen
 

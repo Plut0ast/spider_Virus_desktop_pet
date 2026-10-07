@@ -25,6 +25,22 @@ static class Native
 
     public const uint GA_ROOT = 2;
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct GUITHREADINFO
+    {
+        public uint cbSize, flags;
+        public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
+        public RECT rcCaret;
+    }
+
+    [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint threadId, ref GUITHREADINFO info);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
+
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);

@@ -25,7 +25,6 @@ sealed class Leg
 enum Mode
 {
     Wander,  // roaming to random spots
-    Chase,   // following the cursor
     Edge,    // walking along a window border
     Hide,    // tucked into a corner
     Groom,   // rubbing its front legs together
@@ -38,13 +37,19 @@ enum Mode
     Wrap,    // wrapping a caught fly in silk
     Sleep,   // curled up after being box-selected; a press wakes it
     Wary,    // frozen, watching a nearby cursor, ready to bolt
+    Follow,      // trailing the cursor at a distance (affection)
+    Tap,         // walking up to the cursor and patting it (affection)
+    Rest,        // settled down near the cursor (affection)
+    Repair,      // mending a torn web
+    Peek,        // sitting on top of the window you're using
+    Investigate, // checking out a window that just opened or moved
 }
 
 /// <summary>
 /// One spider: walks the desktop with an alternating gait, glitches what its feet land on,
 /// and reacts to the cursor, windows, flies and its own webs.
 /// </summary>
-sealed class Spider : IDisposable
+sealed partial class Spider : IDisposable
 {
     const int WinSize = 560;
     const float StepDist = 18f;
@@ -106,9 +111,13 @@ sealed class Spider : IDisposable
     Web sleepWeb;        // the web it is asleep in, if any
     float startledFlash; // the "!" shown after being woken
 
-    public Spider(World world, float comfort)
+    public Spider(World world, SpiderMemory memory)
     {
-        Comfort = shownComfort = Math.Clamp(comfort, 0, 1);
+        Comfort = Math.Clamp(memory.Comfort, 0, 1);
+        lastBond = memory.LastBond;
+        lastDecay = memory.LastDecay;
+        ApplyNeglect(DateTime.UtcNow);
+        shownComfort = Comfort;
         this.world = world;
         settings = world.Settings;
         rng = world.Rng;
@@ -207,6 +216,7 @@ sealed class Spider : IDisposable
         shownComfort += (Comfort - shownComfort) * Math.Min(1, dt * 0.8f);
         CheckSelectionBox(dt);
         KeepingCompany(dt);
+        LifeTick(dt);
         float prevHeading = heading;
 
         HandleInput();
@@ -216,12 +226,31 @@ sealed class Spider : IDisposable
         else
         {
             Think(dt);
+            UpdateFidget(dt);
             Walk(dt);
-            float wantH = mode switch { Mode.Hide => -5 * s, Mode.Sleep => sleepWeb != null ? -2 * s : -6 * s, Mode.Wary => -3 * s, Mode.Groom => 2 * s, _ => 0 };
+            float wantH = mode switch
+            {
+                Mode.Hide => -5 * s,
+                Mode.Sleep => sleepWeb != null ? -2 * s : -6 * s,
+                Mode.Wary => -3 * s,
+                Mode.Rest => restSettled ? -3 * s : 0,
+                Mode.Peek => peekSettled ? -2 * s : 0,
+                Mode.Groom => 2 * s,
+                // Wary spiders keep low as they dart about.
+                Mode.Wander or Mode.Edge => -2.5f * s * Wariness(),
+                _ => 0,
+            };
             extraH += (wantH - extraH) * Math.Min(1, dt * 6);
         }
 
-        float wantReach = mode switch { Mode.Hide => 0.8f, Mode.Sleep => sleepWeb != null ? 0.9f : 0.55f, Mode.Wary => 0.9f, _ => 1f };
+        float wantReach = mode switch
+        {
+            Mode.Hide => 0.8f,
+            Mode.Sleep => sleepWeb != null ? 0.9f : 0.55f,
+            Mode.Wary => 0.9f,
+            Mode.Rest => restSettled ? 0.85f : 1f,
+            _ => 1f,
+        };
         reachMul += (wantReach - reachMul) * Math.Min(1, dt * 4);
 
         float turnRate = WrapAngle(heading - prevHeading) / Math.Max(dt, 1e-4f);
@@ -287,11 +316,18 @@ sealed class Spider : IDisposable
         // A wary spider stops whatever it's doing when the cursor comes close.
         if (Wariness() > 0 && !drowsy
             && mode is Mode.Wander or Mode.Edge or Mode.Hide or Mode.Groom or Mode.Hunt or Mode.Spin
+                or Mode.Repair or Mode.Peek or Mode.Investigate or Mode.Follow or Mode.Rest or Mode.Tap
             && Vector2.Distance(world.Cursor, pos) < WatchRadius())
         {
             StartWary();
             return;
         }
+
+        if (TryReactToWindow()) return;
+
+        // A fly struggling in a web is worth dropping things for.
+        if (mode is Mode.Hide or Mode.Groom or Mode.Rest or Mode.Peek or Mode.Investigate or Mode.Follow
+            && StuckFlyNearby() && TryStartHunt()) return;
 
         switch (mode)
         {
@@ -299,31 +335,52 @@ sealed class Spider : IDisposable
                 UpdateWary(dt);
                 break;
 
+            case Mode.Follow:
+                UpdateFollow(dt);
+                break;
+
+            case Mode.Tap:
+                UpdateTap(dt);
+                break;
+
+            case Mode.Rest:
+                UpdateRest(dt);
+                break;
+
+            case Mode.Repair:
+                UpdateRepair(dt);
+                break;
+
+            case Mode.Peek:
+                UpdatePeek(dt);
+                break;
+
+            case Mode.Investigate:
+                UpdateInvestigate(dt);
+                break;
+
             case Mode.Wander:
                 speedMul = 1;
-                if (TryStartHunt() || TryStartSpin()) return;
+                if (TryStartHunt() || TryStartRepair() || TryReactToActivity() || TryStartSpin()) return;
                 if (pauseLeft <= 0 && Vector2.Distance(pos, target) < 12 * s)
                 {
                     double r = rng.NextDouble();
+                    if (Comfort > 0.6f && r < 0.45)
+                    {
+                        // A relaxed spider stops to take in its surroundings.
+                        pauseLeft = 1.8f + (float)rng.NextDouble() * 1.2f;
+                        StartFidget(Fidget.LookAround);
+                        PickTarget();
+                        return;
+                    }
                     if (r < 0.15) { StartGroom(); return; }
                     if (r < 0.4) pauseLeft = 0.3f + (float)rng.NextDouble() * 1.2f;
                     PickTarget();
                 }
                 break;
 
-            case Mode.Chase:
-            {
-                modeLeft -= dt;
-                var away = pos - world.Cursor;
-                float d = away.Length();
-                target = d > 1 ? world.Cursor + away / d * 28 * s : world.Cursor;
-                // Don't follow the cursor onto a fullscreen screen.
-                if (modeLeft <= 0 || world.IsBlocked(world.Cursor)) PickTarget();
-                break;
-            }
-
             case Mode.Edge:
-                if (TryStartHunt()) return;
+                if (TryStartHunt() || TryStartRepair()) return;
                 if (Vector2.Distance(pos, target) < 10 * s)
                 {
                     if (Vector2.Distance(target, edgeEnd) < 1)
@@ -388,16 +445,19 @@ sealed class Spider : IDisposable
         mode = Mode.Wander;
         speedMul = 1;
         hideAtEnd = false;
+        tapping = false;
+        restSettled = false;
+        peekSettled = false;
         double r = rng.NextDouble();
 
         float wary = Wariness();
         if (wary > 0 && rng.NextDouble() < 0.3 + 0.7 * wary && TryPickHidingSpot())
             return;
 
-        if (settings.Chase && wary <= 0 && r < 0.12)
+        // Fond of you: come over to say hello.
+        if (settings.Chase && Comfort >= 0.75f && r < 0.22 && !world.IsBlocked(world.Cursor))
         {
-            mode = Mode.Chase;
-            modeLeft = 3 + (float)rng.NextDouble() * 4;
+            StartAffection();
             return;
         }
 
@@ -415,7 +475,9 @@ sealed class Spider : IDisposable
         for (int tries = 0; tries < 20; tries++)
         {
             Vector2 c;
-            if (rng.NextDouble() < 0.65)
+            // While you're away it ranges much further afield.
+            bool exploring = world.IdleSeconds > 60;
+            if (!exploring && rng.NextDouble() < 0.65)
             {
                 float a = (float)(rng.NextDouble() * Math.PI * 2);
                 float d = (120 + (float)rng.NextDouble() * 400) * s;
@@ -462,6 +524,7 @@ sealed class Spider : IDisposable
     {
         float before = Comfort;
         Comfort = Math.Clamp(Comfort + amount, 0, 1);
+        if (amount > 0) lastBond = DateTime.UtcNow;
         if (amount >= 0.02f && Comfort > before) comfortPulse = 1;
     }
 
@@ -470,7 +533,8 @@ sealed class Spider : IDisposable
     {
         if (mode is Mode.Held or Mode.Thrown or Mode.Flee or Mode.Sleep) return;
         bool near = Vector2.Distance(world.Cursor, BodyOnScreen()) < Math.Max(120 * s, WatchRadius());
-        bool calm = world.CursorVel.Length() < 300 * s;
+        // Only counts while you're actually at the PC.
+        bool calm = world.CursorVel.Length() < 300 * s && world.IdleSeconds < 90;
         if (near && calm) AddComfort(dt * 0.004f);
     }
 
@@ -648,6 +712,11 @@ sealed class Spider : IDisposable
         spinStage = 0;
         sleepAfterSpin = false;
         sleepWeb = null;
+        repairing = null;
+        tapping = false;
+        restSettled = false;
+        peekSettled = false;
+        EndFidget();
     }
 
     // ---------- webs ----------
@@ -736,15 +805,19 @@ sealed class Spider : IDisposable
 
     bool TryStartHunt()
     {
-        if (huntCooldown > 0) return false;
+        bool fed = huntCooldown > 0;
         Fly best = null;
-        float bestDist = 450 * s;
+        float bestScore = float.MaxValue;
         foreach (var f in world.Flies)
         {
             if (f.Caught || f.Gone || (f.Hunter != null && f.Hunter != this)) continue;
+            // Just eaten: only a fly struggling in a web is tempting enough.
+            if (fed && f.StuckIn == null) continue;
             if (Wariness() > 0 && Vector2.Distance(f.Pos, world.Cursor) < WatchRadius() * 1.2f) continue;
             float d = Vector2.Distance(pos, f.Pos);
-            if (d < bestDist) { best = f; bestDist = d; }
+            float range = f.StuckIn != null ? 1500 * s : 450 * s;
+            float score = f.StuckIn != null ? d * 0.3f : d;
+            if (d < range && score < bestScore) { best = f; bestScore = score; }
         }
         if (best == null) return false;
 
@@ -766,9 +839,10 @@ sealed class Spider : IDisposable
         target = prey.Pos;
         float d = Vector2.Distance(Mouth, prey.Pos);
         // Creep up, then pounce.
-        speedMul = d < 90 * s ? 2.6f : 1f;
+        // A fly stuck in a web gets a full sprint.
+        speedMul = prey.StuckIn != null ? 2.2f : d < 90 * s ? 2.6f : 1f;
 
-        if (d > 600 * s)
+        if (d > (prey.StuckIn != null ? 1700 : 600) * s)
         {
             prey.Hunter = null;
             prey = null;
@@ -943,6 +1017,9 @@ sealed class Spider : IDisposable
             case Mode.Flee:
                 StartFlee(1f);
                 break;
+            case Mode.Investigate:
+                StartInvestigate();
+                break;
             default:
                 PickTarget();
                 break;
@@ -963,7 +1040,12 @@ sealed class Spider : IDisposable
     void Walk(float dt)
     {
         bool standing = mode is Mode.Hide or Mode.Groom or Mode.Dizzy or Mode.Wrap or Mode.Sleep
-                        || (mode == Mode.Spin && spinStage > 0);
+                        || (mode == Mode.Spin && spinStage > 0)
+                        || (mode == Mode.Tap && tapping)
+                        || (mode == Mode.Rest && restSettled)
+                        || (mode == Mode.Peek && peekSettled)
+                        || (mode == Mode.Repair && repairStage > 0)
+                        || (mode == Mode.Investigate && investigateStage == 1);
 
         Vector2 to = target - pos;
         float dist = to.Length();
@@ -971,7 +1053,7 @@ sealed class Spider : IDisposable
         if (pauseLeft > 0) pauseLeft -= dt;
         else if (!standing)
         {
-            float burst = mode == Mode.Flee ? 1f : 0.55f + 0.45f * MathF.Abs(MathF.Sin(time * 4.3f));
+            float burst = mode == Mode.Flee ? 1f : MoodPace(dt);
             speed = settings.Speed * s * burst * speedMul * Math.Clamp(dist / (40 * s), 0, 1);
         }
 
@@ -998,8 +1080,6 @@ sealed class Spider : IDisposable
 
     Vector2 RestAt(Leg leg, Vector2 at, float h) => at + Dir(h + leg.BaseAngle) * leg.Reach * reachMul * s;
 
-    bool FrontLegBusy(Leg leg) => leg.K == 0 && mode is Mode.Groom or Mode.Wrap;
-
     void UpdateLegs(float dt)
     {
         float speed = vel.Length();
@@ -1013,7 +1093,7 @@ sealed class Spider : IDisposable
 
         foreach (var leg in legs)
         {
-            if (!leg.Stepping || FrontLegBusy(leg)) continue;
+            if (!leg.Stepping || LegPosed(leg)) continue;
             leg.T += dt / leg.StepDur;
             // While the foot is still rising it keeps re-aiming at the predicted spot.
             if (leg.T < 0.5f)
@@ -1033,7 +1113,7 @@ sealed class Spider : IDisposable
         var right = Dir(heading + MathF.PI / 2);
         foreach (var leg in legs)
         {
-            if (FrontLegBusy(leg)) { PoseFrontLeg(leg, dt); continue; }
+            if (LegPosed(leg)) { PoseLeg(leg, dt); continue; }
             if (leg.Stepping) continue;
 
             Vector2 rest = RestAt(leg, pos, heading);
@@ -1128,7 +1208,9 @@ sealed class Spider : IDisposable
         if (mode is not (Mode.Held or Mode.Thrown))
             foreach (var leg in legs) lifted += leg.Lift;
         // Slow, deep breaths while asleep.
-        float breath = mode == Mode.Sleep ? MathF.Sin(time * 1.2f) * 1f : MathF.Sin(time * 2.1f) * 0.6f;
+        float breath = fidget == Fidget.Freeze ? 0
+                     : mode == Mode.Sleep ? MathF.Sin(time * 1.2f) * 1f
+                     : MathF.Sin(time * 2.1f) * 0.6f;
         return (13 + breath) * s - lifted * 0.12f + extraH;
     }
 

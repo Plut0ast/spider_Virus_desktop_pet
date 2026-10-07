@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace WebCrawler;
@@ -27,6 +28,17 @@ sealed class World : IDisposable
     Vector2 selectStart;
     bool buttonWasDown, selectStartedOnSurface;
     readonly StringBuilder className = new(64);
+
+    // What you're up to: how long since any input, whether you're typing, the window you're in,
+    // and windows that just opened or moved (only for the frame after each check).
+    public float IdleSeconds { get; private set; }
+    public bool Typing => typingLevel > 4;
+    public Rectangle? Foreground { get; private set; }
+    public Vector2? Caret { get; private set; }
+    public IReadOnlyList<WindowEvent> WindowEvents { get; private set; } = Array.Empty<WindowEvent>();
+    uint lastInputTick;
+    float typingLevel, foregroundTimer;
+    Vector2 inputCursor;
     float flyTimer = 12f;
 
     public World(CrawlerSettings settings, Random rng, float scale)
@@ -46,8 +58,10 @@ sealed class World : IDisposable
         Cursor = cur;
         hasCursor = true;
 
-        Windows.Update(dt);
+        bool refreshed = Windows.Update(dt);
+        WindowEvents = refreshed ? Windows.Events : Array.Empty<WindowEvent>();
         TrackSelection();
+        TrackActivity(dt);
 
         if (Settings.Flies)
         {
@@ -100,6 +114,60 @@ sealed class World : IDisposable
     {
         foreach (var web in Webs) web.Dispose();
         Webs.Clear();
+    }
+
+    void TrackActivity(float dt)
+    {
+        var info = new Native.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<Native.LASTINPUTINFO>() };
+        if (Native.GetLastInputInfo(ref info))
+        {
+            IdleSeconds = unchecked((uint)Environment.TickCount - info.dwTime) / 1000f;
+            if (info.dwTime != lastInputTick)
+            {
+                // New input while the mouse is still and no button is down is almost always a key press.
+                bool mouse = Vector2.Distance(Cursor, inputCursor) > 0.5f
+                             || (Native.GetAsyncKeyState(Native.VK_LBUTTON) & 0x8000) != 0;
+                if (!mouse && lastInputTick != 0) typingLevel += 1;
+                lastInputTick = info.dwTime;
+            }
+        }
+        inputCursor = Cursor;
+        typingLevel *= MathF.Exp(-dt / 2);
+
+        foregroundTimer -= dt;
+        if (foregroundTimer <= 0)
+        {
+            foregroundTimer = 0.25f;
+            RefreshForeground();
+        }
+    }
+
+    // The window you're working in, and where its text cursor is if it says.
+    void RefreshForeground()
+    {
+        Foreground = null;
+        Caret = null;
+        var h = Native.GetForegroundWindow();
+        if (h == IntPtr.Zero) return;
+        uint thread = Native.GetWindowThreadProcessId(h, out uint pid);
+        if (pid == (uint)Environment.ProcessId) return;
+        className.Clear();
+        Native.GetClassName(h, className, className.Capacity);
+        if (className.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd") return;
+
+        if (Native.DwmGetWindowAttribute(h, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out var r, 16) != 0)
+            Native.GetWindowRect(h, out r);
+        var rect = Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+        if (rect.Width < 160 || rect.Height < 100) return;
+        Foreground = rect;
+
+        var gti = new Native.GUITHREADINFO { cbSize = (uint)Marshal.SizeOf<Native.GUITHREADINFO>() };
+        if (Native.GetGUIThreadInfo(thread, ref gti) && gti.hwndCaret != IntPtr.Zero)
+        {
+            var p = new Native.POINT(gti.rcCaret.Left, gti.rcCaret.Bottom);
+            if (Native.ClientToScreen(gti.hwndCaret, ref p) && rect.Contains(p.X, p.Y))
+                Caret = new Vector2(p.X, p.Y);
+        }
     }
 
     void TrackSelection()
@@ -170,21 +238,28 @@ sealed class DesktopWindows
 {
     public readonly List<Rectangle> Rects = new();
     public readonly List<Rectangle> Fullscreen = new();
+    // Windows that opened or moved since the previous check.
+    public readonly List<WindowEvent> Events = new();
+    Dictionary<IntPtr, Rectangle> known = new(), current = new();
+    bool hasPrevious;
     readonly StringBuilder className = new(64);
     float timer;
 
-    public void Update(float dt)
+    // Returns true on the frames it re-checked the windows.
+    public bool Update(float dt)
     {
         timer -= dt;
-        if (timer > 0) return;
+        if (timer > 0) return false;
         timer = 0.5f;
         Refresh();
+        return true;
     }
 
     void Refresh()
     {
         Rects.Clear();
         Fullscreen.Clear();
+        current.Clear();
         var screens = Screen.AllScreens;
         uint myPid = (uint)Environment.ProcessId;
 
@@ -216,9 +291,26 @@ sealed class DesktopWindows
                 foreach (var sc in screens)
                     if (rect.Contains(sc.Bounds) && !Fullscreen.Contains(sc.Bounds)) Fullscreen.Add(sc.Bounds);
 
-            if (rect.Width >= 160 && rect.Height >= 100) Rects.Add(rect);
+            if (rect.Width >= 160 && rect.Height >= 100)
+            {
+                Rects.Add(rect);
+                current[h] = rect;
+            }
             return true;
         }, IntPtr.Zero);
+
+        Events.Clear();
+        if (hasPrevious)
+            foreach (var (h, r) in current)
+            {
+                if (!known.TryGetValue(h, out var old))
+                    Events.Add(new WindowEvent(WindowEventKind.Opened, r));
+                else if (Math.Abs(old.X - r.X) + Math.Abs(old.Y - r.Y) > 40
+                         || Math.Abs(old.Width - r.Width) + Math.Abs(old.Height - r.Height) > 60)
+                    Events.Add(new WindowEvent(WindowEventKind.Moved, r));
+            }
+        (known, current) = (current, known);
+        hasPrevious = true;
     }
 
     public bool IsBlocked(Vector2 p)
@@ -343,3 +435,7 @@ sealed class DesktopWindows
         return false;
     }
 }
+
+enum WindowEventKind { Opened, Moved }
+
+readonly record struct WindowEvent(WindowEventKind Kind, Rectangle Rect);

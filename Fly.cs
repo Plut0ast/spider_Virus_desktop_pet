@@ -27,6 +27,10 @@ sealed class Fly : IDisposable
     Vector2 vel, target;
     float landed, age, facing, overWindowFor;
 
+    // Caught in a web, struggling, until a spider gets to it or it tears free.
+    public Web StuckIn;
+    float stuckFor, noStickFor;
+
     public bool Landed => landed > 0;
 
     public Fly(World world, Vector2 start)
@@ -43,6 +47,22 @@ sealed class Fly : IDisposable
     public void Update(float dt)
     {
         if (Caught || Gone) return;
+
+        if (StuckIn != null)
+        {
+            stuckFor += dt;
+            if (!world.Webs.Contains(StuckIn) || !StuckIn.Finished || stuckFor > 25)
+            {
+                StuckIn = null;
+                noStickFor = 6;
+            }
+            else
+            {
+                if (rng.NextDouble() < dt * 2) StuckIn.Vibrate();
+                return;
+            }
+        }
+        noStickFor -= dt;
         age += dt;
 
         if (age > Lifetime || world.IsBlocked(Pos)) { Gone = true; return; }
@@ -66,6 +86,18 @@ sealed class Fly : IDisposable
             vel = Vector2.Zero;
             return;
         }
+
+        // Flying through a finished web can get it stuck.
+        if (noStickFor <= 0)
+            foreach (var web in world.Webs)
+                if (web.Finished && Vector2.Distance(Pos, web.Hub) < web.Radius * 0.85f && rng.NextDouble() < dt * 1.5)
+                {
+                    StuckIn = web;
+                    stuckFor = 0;
+                    vel = Vector2.Zero;
+                    web.Vibrate();
+                    return;
+                }
 
         var to = target - Pos;
         float d = to.Length();
@@ -130,7 +162,9 @@ sealed class Fly : IDisposable
         g.FillEllipse(eye, 2.6f * s, -1.4f * s, 2.8f * s, 2.8f * s);
         g.Restore(st);
 
-        win.Present(bmp, (int)(Pos.X - Size / 2f), (int)(Pos.Y - Size / 2f));
+        // A stuck fly shudders on the spot.
+        var shudder = StuckIn != null ? RandomInDisk(1.5f * s) : Vector2.Zero;
+        win.Present(bmp, (int)(Pos.X + shudder.X - Size / 2f), (int)(Pos.Y + shudder.Y - Size / 2f));
     }
 
     public void Dispose()

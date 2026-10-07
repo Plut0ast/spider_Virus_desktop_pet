@@ -35,6 +35,7 @@ sealed class Web : IDisposable
     readonly Graphics g;
     readonly int size;
     float age, shake, clearT;
+    float sinceDamage = float.MaxValue, repairTimer;
     int health = ClicksToClear;
     bool clearing;
     bool hidden;
@@ -102,6 +103,48 @@ sealed class Web : IDisposable
         }
     }
 
+    public bool Finished => Progress >= 1 && !clearing;
+    public bool Damaged => Finished && health < ClicksToClear;
+    public float SinceDamage => sinceDamage;
+
+    // A fly hitting or struggling in the web makes it tremble.
+    public void Vibrate()
+    {
+        shake = Math.Max(shake, 0.25f);
+        dirty = true;
+    }
+
+    // Mends one torn thread at a time and lets cut spokes grow back. True once it's whole again.
+    public bool Repair(float dt)
+    {
+        dirty = true;
+        bool whole = true;
+        for (int i = 0; i < spokeLen.Length; i++)
+            if (spokeLen[i] < 1)
+            {
+                spokeLen[i] = Math.Min(1, spokeLen[i] + dt * 0.5f);
+                whole = false;
+            }
+
+        repairTimer += dt;
+        if (repairTimer >= 0.06f)
+        {
+            repairTimer = 0;
+            int n = spokes.Length, total = rings * n, start = rng.Next(total);
+            for (int k = 0; k < total; k++)
+            {
+                int idx = (start + k) % total, r = idx / n, j = idx % n;
+                if (broken[r, j]) { broken[r, j] = false; whole = false; break; }
+            }
+        }
+        else
+            foreach (bool b in broken)
+                if (b) { whole = false; break; }
+
+        if (whole) health = ClicksToClear;
+        return whole;
+    }
+
     public bool Holds(Vector2 p, float margin) => !clearing && Vector2.Distance(p, Hub) < Radius + margin;
 
     public void Update(float dt, Vector2 cursor)
@@ -112,6 +155,7 @@ sealed class Web : IDisposable
         // Threads only catch clicks while the cursor is over the web.
         win.SetClickThrough(clearing || Vector2.Distance(cursor, Hub) > Radius + 8 * s);
 
+        sinceDamage += dt;
         if (shake > 0) { shake -= dt; dirty = true; }
         if (clearing) { clearT += dt; dirty = true; }
     }
@@ -127,6 +171,7 @@ sealed class Web : IDisposable
     {
         Disturbed = true;
         shake = 0.3f;
+        sinceDamage = 0;
         dirty = true;
 
         var local = at - Hub;

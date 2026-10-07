@@ -48,7 +48,7 @@ sealed class CrawlerContext : ApplicationContext
         menu.Items.Add("Remove spider", null, (_, _) => RemoveSpider());
         menu.Items.Add(new ToolStripSeparator());
 
-        var chase = new ToolStripMenuItem("Chase cursor") { Checked = settings.Chase, CheckOnClick = true };
+        var chase = new ToolStripMenuItem("Affection (follow, tap, rest)") { Checked = settings.Chase, CheckOnClick = true };
         chase.CheckedChanged += (_, _) => settings.Chase = chase.Checked;
         menu.Items.Add(chase);
 
@@ -132,8 +132,8 @@ sealed class CrawlerContext : ApplicationContext
     {
         if (spiders.Count >= MaxSpiders) return;
         int slot = spiders.Count;
-        float comfort = slot < saved.Comfort.Count ? saved.Comfort[slot] : 0f;
-        spiders.Add(new Spider(world, comfort));
+        var memory = slot < saved.Spiders.Count ? saved.Spiders[slot] : new SpiderMemory();
+        spiders.Add(new Spider(world, memory));
     }
 
     void SaveState()
@@ -141,8 +141,8 @@ sealed class CrawlerContext : ApplicationContext
         // Keep entries for spiders that were removed so re-adding one brings it back as it was.
         for (int i = 0; i < spiders.Count; i++)
         {
-            if (i < saved.Comfort.Count) saved.Comfort[i] = spiders[i].Comfort;
-            else saved.Comfort.Add(spiders[i].Comfort);
+            if (i < saved.Spiders.Count) saved.Spiders[i] = spiders[i].Memory;
+            else saved.Spiders.Add(spiders[i].Memory);
         }
         saved.Save();
     }

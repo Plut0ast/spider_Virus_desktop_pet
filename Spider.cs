@@ -269,8 +269,6 @@ sealed class Spider : IDisposable
                 Startle();
                 return;
             }
-            // Resting safely in its own web.
-            if (sleepWeb != null) AddComfort(dt * 0.0005f);
             return;
         }
 

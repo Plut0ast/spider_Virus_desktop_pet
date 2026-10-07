@@ -36,7 +36,8 @@ sealed class Fly : IDisposable
         s = world.S;
         g = Graphics.FromImage(bmp);
 
-        var screens = Screen.AllScreens;
+        var screens = world.UsableScreens();
+        if (screens.Length == 0) screens = Screen.AllScreens;
         var b = screens[rng.Next(screens.Length)].WorkingArea;
         bool left = rng.NextDouble() < 0.5;
         Pos = new Vector2(left ? b.Left - 20 : b.Right + 20, b.Top + (float)rng.NextDouble() * b.Height);
@@ -49,6 +50,9 @@ sealed class Fly : IDisposable
     {
         if (Caught || Gone) return;
         age += dt;
+
+        // Never bother anyone watching or playing something fullscreen.
+        if (world.IsBlocked(Pos)) { Gone = true; return; }
 
         var fromCursor = Pos - world.Cursor;
         float cursorDist = fromCursor.Length();

@@ -89,6 +89,9 @@ sealed class Spider : IDisposable
     float spinRadius, webCooldown, huntCooldown = 5f;
     Fly prey;
 
+    // Every screen has something fullscreen on it, so the spider has stepped out of sight.
+    bool away;
+
     public Spider(World world)
     {
         this.world = world;
@@ -98,14 +101,6 @@ sealed class Spider : IDisposable
         g = Graphics.FromImage(canvas);
         labelFont = new Font("Consolas", 6f * s, FontStyle.Bold, GraphicsUnit.Pixel);
         webCooldown = 20 + (float)rng.NextDouble() * 25;
-
-        // Walk in from the left or right edge of a random screen.
-        var screens = Screen.AllScreens;
-        var b = screens[rng.Next(screens.Length)].Bounds;
-        bool left = rng.NextDouble() < 0.5;
-        pos = new Vector2(left ? b.Left - 40 * s : b.Right + 40 * s, b.Top + (float)rng.NextDouble() * b.Height);
-        heading = left ? 0 : MathF.PI;
-        target = new Vector2(b.Left + b.Width * (left ? 0.3f : 0.7f), pos.Y);
 
         for (int i = 0; i < 8; i++)
         {
@@ -118,9 +113,11 @@ sealed class Spider : IDisposable
                 BaseAngle = side * LegAngles[k],
                 Reach = LegReach[k],
             };
-            leg.Foot = RestAt(leg, pos, heading);
             legs[i] = leg;
         }
+
+        var screens = world.UsableScreens();
+        EnterFrom(screens.Length > 0 ? screens[rng.Next(screens.Length)] : Screen.AllScreens[0]);
 
         win.Cursor = Cursors.Hand;
         win.MouseDown += OnMouseDown;
@@ -130,10 +127,63 @@ sealed class Spider : IDisposable
 
     public void KeepOnTop() => win.KeepOnTop();
 
+    // Walk in from just past the left or right edge of a screen.
+    void EnterFrom(Screen screen)
+    {
+        var b = screen.Bounds;
+        bool left = rng.NextDouble() < 0.5;
+        pos = new Vector2(left ? b.Left - 40 * s : b.Right + 40 * s, b.Top + b.Height * (0.15f + (float)rng.NextDouble() * 0.7f));
+        heading = left ? 0 : MathF.PI;
+        target = new Vector2(b.Left + b.Width * (left ? 0.3f : 0.7f), pos.Y);
+        vel = Vector2.Zero;
+        mode = Mode.Wander;
+        speedMul = 1;
+        extraH = 0;
+        trail.Clear();
+        foreach (var leg in legs)
+        {
+            leg.Foot = RestAt(leg, pos, heading);
+            leg.Lift = 0;
+            leg.Stepping = false;
+        }
+    }
+
+    // A screen just went fullscreen under the spider: hop to a free screen, or vanish if none.
+    void LeaveBlockedScreen()
+    {
+        DropTasks();
+        pressed = false;
+        foreach (var gl in glitches) gl.Dispose();
+        glitches.Clear();
+
+        var usable = world.UsableScreens();
+        if (usable.Length == 0)
+        {
+            away = true;
+            win.Hide();
+            return;
+        }
+        EnterFrom(usable[rng.Next(usable.Length)]);
+    }
+
     // ---------- main loop ----------
 
     public void Update(float dt)
     {
+        if (away)
+        {
+            var usable = world.UsableScreens();
+            if (usable.Length == 0) return;
+            away = false;
+            EnterFrom(usable[rng.Next(usable.Length)]);
+            win.Show();
+        }
+        else if (mode != Mode.Held && world.IsBlocked(pos))
+        {
+            LeaveBlockedScreen();
+            if (away) return;
+        }
+
         time += dt;
         webCooldown -= dt;
         huntCooldown -= dt;
@@ -218,7 +268,8 @@ sealed class Spider : IDisposable
                 var away = pos - world.Cursor;
                 float d = away.Length();
                 target = d > 1 ? world.Cursor + away / d * 28 * s : world.Cursor;
-                if (modeLeft <= 0) PickTarget();
+                // Don't follow the cursor onto a fullscreen screen.
+                if (modeLeft <= 0 || world.IsBlocked(world.Cursor)) PickTarget();
                 break;
             }
 
@@ -305,7 +356,8 @@ sealed class Spider : IDisposable
             return;
         }
 
-        var screens = Screen.AllScreens;
+        var screens = world.UsableScreens();
+        if (screens.Length == 0) return;
         for (int tries = 0; tries < 20; tries++)
         {
             Vector2 c;
@@ -327,7 +379,7 @@ sealed class Spider : IDisposable
                 if (b.Contains((int)c.X, (int)c.Y)) { target = c; return; }
             }
         }
-        var p = Screen.PrimaryScreen!.Bounds;
+        var p = screens[0].Bounds;
         target = new Vector2(p.Left + p.Width / 2f, p.Top + p.Height / 2f);
     }
 
@@ -381,7 +433,7 @@ sealed class Spider : IDisposable
 
         float radius = (55 + (float)rng.NextDouble() * 45) * s;
         var hub = corner + inward * radius * 0.8f;
-        if (!World.OnAnyScreen(hub)) return false;
+        if (!world.IsUsable(hub)) return false;
 
         spinHub = hub;
         spinRadius = radius;
@@ -833,6 +885,7 @@ sealed class Spider : IDisposable
 
     public void Render()
     {
+        if (away) return;
         var origin = new Point((int)pos.X - WinSize / 2, (int)pos.Y - WinSize / 2);
         g.Clear(Color.Transparent);
 

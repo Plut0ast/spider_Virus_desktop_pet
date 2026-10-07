@@ -37,6 +37,7 @@ sealed class Web : IDisposable
     float age, shake, clearT;
     int health = ClicksToClear;
     bool clearing;
+    bool hidden;
     bool dirty = true;
     int lastAlpha = -1;
 
@@ -86,6 +87,19 @@ sealed class Web : IDisposable
     {
         bundles.Add(p);
         dirty = true;
+    }
+
+    // Hidden while its screen has something fullscreen on it.
+    public void SetHidden(bool hide)
+    {
+        if (hide == hidden) return;
+        hidden = hide;
+        if (hide) win.Hide();
+        else
+        {
+            win.Show();
+            dirty = true;
+        }
     }
 
     public bool Holds(Vector2 p, float margin) => !clearing && Vector2.Distance(p, Hub) < Radius + margin;
@@ -159,7 +173,7 @@ sealed class Web : IDisposable
 
     public void Render()
     {
-        if (!dirty) return;
+        if (!dirty || hidden) return;
         dirty = false;
         lastAlpha = Alpha();
         float k = lastAlpha / 255f;

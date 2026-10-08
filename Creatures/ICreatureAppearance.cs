@@ -10,6 +10,9 @@ interface ICreatureAppearance
     // What to call this kind of creature, e.g. "Spider".
     string DisplayName { get; }
 
+    // Its scientific group, for the catalogue line on its specimen tag, e.g. "Araneae".
+    string Taxon { get; }
+
     // The colour that shows how comfortable it is with you (0 wary, 1 at ease).
     Color ComfortColor(float comfort, int alpha = 255);
 

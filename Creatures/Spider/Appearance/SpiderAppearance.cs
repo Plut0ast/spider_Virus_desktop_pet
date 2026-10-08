@@ -30,6 +30,7 @@ sealed class SpiderPose
 sealed class SpiderAppearance : ICreatureAppearance
 {
     public string DisplayName => "Spider";
+    public string Taxon => "Araneae";
 
     // Red when wary, through orange and yellow, to green when at ease.
     public Color ComfortColor(float comfort, int alpha = 255)

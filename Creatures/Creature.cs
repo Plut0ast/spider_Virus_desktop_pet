@@ -2,8 +2,17 @@ using System.Numerics;
 
 namespace WebCrawler;
 
-/// <summary>One row on a creature's stats card, with an optional bar from 0 to 1.</summary>
-readonly record struct StatLine(string Label, string Value, float? Bar = null, Color? BarColor = null);
+/// <summary>How a stat is shown on a creature's specimen tag.</summary>
+enum StatStyle
+{
+    Text,   // just the value
+    Swatch, // a small square of Color before the value
+    Gauge,  // a stomach-shaped gauge filled to Amount (0 to 1) before the value
+    Tally,  // Amount drawn as tally marks
+}
+
+/// <summary>One row on a creature's specimen tag.</summary>
+readonly record struct StatLine(string Label, string Value, StatStyle Style = StatStyle.Text, float Amount = 0, Color? Color = null);
 
 /// <summary>
 /// What every creature shares, whatever it looks like or however it behaves: its bond with you,
@@ -38,6 +47,7 @@ abstract class Creature : IDisposable
 
     protected DateTime lastBond, lastDecay, born, lastFed;
     protected int fliesEaten, timesThrown, naps;
+    public int FliesEaten => fliesEaten;
     protected readonly List<RememberedSpot> favourites = new();
     protected readonly List<RememberedSpot> scary = new();
     float neglectTimer;
@@ -170,6 +180,12 @@ abstract class Creature : IDisposable
                             : Comfort < 0.75f ? "Relaxed around you"
                             : "Fond of you";
 
+    // One word for small spaces like its tag.
+    public string MoodShort => Comfort < 0.25f ? "scared"
+                             : Comfort < 0.5f ? "wary"
+                             : Comfort < 0.75f ? "relaxed"
+                             : "fond";
+
     public string HungerWord => Hunger < 0.25f ? "Full"
                               : Hunger < 0.5f ? "Peckish"
                               : Hunger < 0.8f ? "Hungry"
@@ -180,21 +196,23 @@ abstract class Creature : IDisposable
         get
         {
             var age = DateTime.UtcNow - born;
-            return age.TotalDays >= 1 ? $"{(int)age.TotalDays} days"
-                 : age.TotalHours >= 1 ? $"{(int)age.TotalHours} hours"
-                 : $"{Math.Max(1, (int)age.TotalMinutes)} minutes";
+            return age.TotalDays >= 1 ? Plural((int)age.TotalDays, "day")
+                 : age.TotalHours >= 1 ? Plural((int)age.TotalHours, "hour")
+                 : Plural(Math.Max(1, (int)age.TotalMinutes), "minute");
         }
     }
 
-    // What its card in the nest window shows. A creature type can add its own rows (and traits, later).
+    static string Plural(int n, string unit) => n == 1 ? $"1 {unit}" : $"{n} {unit}s";
+
+    // What its specimen tag in the nest window shows. A creature type can add its own rows (and traits, later).
     public virtual List<StatLine> Stats() => new()
     {
-        new("Age", AgeText),
-        new("Mood", $"{MoodWord} ({Comfort:P0})", Comfort, Appearance.ComfortColor(Comfort)),
-        new("Hunger", $"{HungerWord} ({Hunger:P0})", Hunger, Palette.Hunger),
-        new("Flies eaten", fliesEaten.ToString()),
-        new("Naps", naps.ToString()),
-        new("Times thrown", timesThrown.ToString()),
+        new("age", AgeText),
+        new("mood", $"{MoodShort} ({Comfort:P0})", StatStyle.Swatch, Comfort, Appearance.ComfortColor(Comfort)),
+        new("hunger", $"{HungerWord.ToLowerInvariant()} ({Hunger:P0})", StatStyle.Gauge, 1 - Hunger),
+        new("flies", fliesEaten.ToString(), StatStyle.Tally, fliesEaten),
+        new("naps", naps.ToString()),
+        new("thrown", timesThrown.ToString()),
     };
 
     public string Summary() => string.Join("\n", Stats().Select(l => $"{l.Label}: {l.Value}"))

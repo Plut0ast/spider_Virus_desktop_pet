@@ -163,7 +163,7 @@ sealed class CrawlerContext : ApplicationContext
     {
         if (nest == null || nest.IsDisposed)
         {
-            nest = new NestWindow(world, () => creatures, c => nest.Wake(c), icon);
+            nest = new NestWindow(world, () => creatures, icon);
             nest.FormClosed += (_, _) => nest = null;
             nest.Show();
         }

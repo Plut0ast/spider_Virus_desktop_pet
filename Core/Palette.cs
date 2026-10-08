@@ -16,13 +16,16 @@ static class Palette
     public static readonly Color BodyRed = Color.FromArgb(255, 64, 96);
     public static readonly Color NodeFill = Color.FromArgb(12, 14, 30);
 
-    // Stat bars.
-    public static readonly Color Hunger = Color.FromArgb(255, 170, 70);
-
-    // The nest window.
-    public static readonly Color WindowBack = Color.FromArgb(14, 15, 24);
-    public static readonly Color Card = Color.FromArgb(22, 24, 39);
-    public static readonly Color CardEdge = Color.FromArgb(38, 41, 62);
-    public static readonly Color Text = Color.FromArgb(230, 232, 245);
-    public static readonly Color MutedText = Color.FromArgb(138, 143, 176);
+    // The nest window: dusty silk and paper tags on near-black, so the only real colour
+    // on screen is each creature's own comfort colour.
+    public static readonly Color WindowBack = Color.FromArgb(17, 16, 15);
+    public static readonly Color Silk = Color.FromArgb(214, 207, 192);
+    public static readonly Color NestBulk = Color.FromArgb(27, 25, 23);
+    public static readonly Color HollowEdge = Color.FromArgb(36, 33, 30);
+    public static readonly Color HollowCentre = Color.FromArgb(7, 7, 7);
+    public static readonly Color Paper = Color.FromArgb(228, 221, 205);
+    public static readonly Color Ink = Color.FromArgb(48, 43, 38);
+    public static readonly Color InkMuted = Color.FromArgb(118, 109, 98);
+    public static readonly Color Text = Color.FromArgb(226, 220, 208);
+    public static readonly Color MutedText = Color.FromArgb(128, 121, 111);
 }

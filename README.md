@@ -33,7 +33,9 @@ Press **Win + R**, type `shell:startup`, press Enter, and put a shortcut to `pub
 | Double-click the tray icon | Opens the nest |
 | Carry a spider onto the open nest and let go | Puts it to bed in the nest |
 | Click a sleeper in the nest | Wakes it; it climbs out beside the nest window |
-| Hover the tray icon | Shows the first spider's comfort |
+| Drag a sleeper out of the nest | Lifts it out onto the cursor; let go to set it down, throw it, or drop it back in |
+| Click a name on a specimen tag | Renames that creature (Enter to save, Esc to cancel); the name is saved straight away |
+| Hover the tray icon | Shows the first spider's name and comfort |
 
 ### Tray menu
 

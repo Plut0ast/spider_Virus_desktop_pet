@@ -7,22 +7,6 @@ namespace WebCrawler;
 
 enum GlitchKind { Split, Slice, Box, Bar, Echo, Tiles, Invert }
 
-static class Palette
-{
-    public static readonly Color Pink = Color.FromArgb(255, 63, 164);
-    public static readonly Color Blue = Color.FromArgb(61, 90, 254);
-    public static readonly Color Cyan = Color.FromArgb(77, 216, 255);
-    public static readonly Color Yellow = Color.FromArgb(255, 225, 77);
-    public static readonly Color Lime = Color.FromArgb(125, 255, 106);
-    public static readonly Color[] All = { Pink, Blue, Cyan, Yellow, Lime };
-
-    // Spider, web and fly linework.
-    public static readonly Color Line = Color.FromArgb(150, 172, 255);
-    public static readonly Color BodyRed = Color.FromArgb(255, 64, 96);
-    public static readonly Color NodeFill = Color.FromArgb(12, 14, 30);
-    public static Color Pick(Random rng) => All[rng.Next(All.Length)];
-}
-
 /// <summary>
 /// One short-lived distortion of a patch of the real screen. The patch is sampled
 /// when the glitch spawns and drawn back, mangled, until it fades out.

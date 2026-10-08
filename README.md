@@ -8,7 +8,11 @@ It's click-through everywhere except the spider's own body and its web threads, 
 
 Build it once (see [Build](#build)), then double-click `publish\WebCrawler.exe`. It needs the .NET 8 Desktop Runtime.
 
-Only one copy runs at a time. Launching it again while it's already running does nothing; use the tray icon instead.
+Only one copy runs at a time. Launching it again while it's already running opens the nest.
+
+### The nest app
+
+Run `WebCrawler.exe --nest` (a **Spider Nest** shortcut does this) to open the nest window directly. If the spiders aren't running yet, this starts them too.
 
 ### Start with Windows
 
@@ -26,12 +30,15 @@ Press **Win + R**, type `shell:startup`, press Enter, and put a shortcut to `pub
 | Box-select it on the desktop or in File Explorer | Sends it to sleep in a web |
 | Click a web's threads | Tears them; 4 clicks clears the web |
 | Right-click the tray icon | Opens the menu below |
-| Double-click the tray icon | Adds another spider |
+| Double-click the tray icon | Opens the nest |
+| Carry a spider onto the open nest and let go | Puts it to bed in the nest |
+| Click a sleeper in the nest | Wakes it; it climbs out beside the nest window |
 | Hover the tray icon | Shows the first spider's comfort |
 
 ### Tray menu
 
-- **Add spider / Remove spider**: up to 6 spiders.
+- **Open nest**: opens the nest window.
+- **Add spider / Remove spider**: up to 6 creatures, counting those asleep in the nest.
 - **Affection (follow, tap, rest)**: lets a spider that trusts you come over to tap, follow or rest near the cursor.
 - **Flies**: turns flies on or off.
 - **Release a fly**: sends a fly onto the desktop straight away.
@@ -157,6 +164,23 @@ Press and drag it and it hangs from the cursor on a thread, legs kicking, body s
 
 These only use whether there has been keyboard or mouse input and where windows are. It never reads what you type.
 
+### The nest
+
+The nest is an ordinary window with a woven nest drawn in the same node style as the spiders.
+
+- **Putting a creature to bed**: while the nest window is open, pick a spider up and carry it over the nest. The nest glows; let go and the spider curls up inside and leaves the desktop. Being tucked in gently raises its comfort a little and counts as a nap. Several creatures can share the nest.
+- **Waking one**: hover over a sleeper (it gets a ring and the caption says who it is) and click. It climbs out just outside the nest window and has a little groom before setting off.
+- **Closing the nest** doesn't wake anyone. Sleepers stay tucked in, even across restarts, until you wake them.
+- **Stats cards**: each creature in the nest gets a card underneath showing:
+  - **Age**
+  - **Mood**: how it feels about you, with a bar in its comfort colour
+  - **Hunger**: with a bar
+  - **Flies eaten**, **Naps** and **Times thrown**
+
+### Hunger
+
+Each creature gets hungry over real time, from full to starving in about 8 hours, even while the app is closed or it's asleep in the nest. Each fly it eats fills it up by 30%. Hungry spiders spot flies from further away, chase them further, and go after another one sooner after eating. Its card in the nest shows Full, Peckish, Hungry or Starving.
+
 ### Memory
 
 Everything below is saved to `%LOCALAPPDATA%\WebCrawler\state.json` every 30 seconds, when you quit, and when Windows shuts down or you sign out. When you open the app again, each spider carries on where it left off.
@@ -164,6 +188,8 @@ Everything below is saved to `%LOCALAPPDATA%\WebCrawler\state.json` every 30 sec
 - **Where it was**: it reappears in the same spot, facing the same way (or walks in from a screen edge if that spot is now off-screen or fullscreen). If it was asleep, it's still asleep, in the same web.
 - **Its webs**: finished webs come back in the same places with the same shape, along with any flies wrapped up on them.
 - **Comfort and the bond**: its comfort, and when you last did something it liked, so the colour carries over and neglect keeps counting while the app is closed.
+- **Hunger**: when it last ate.
+- **The nest**: whether it's asleep in the nest.
 - **Favourite spots**: places where it slept, finished hiding in peace, or rested near you. It wanders back to them now and then and prefers to build webs there. A spot is forgotten after two weeks without a visit.
 - **Places it avoids**: where it was thrown hard, clicked to startle it, or scared by a cursor rush. It won't pick those as places to walk to. It forgets them after three days.
 - **Its life story**: when it was born, flies eaten, naps and times thrown. See **About your spider** in the tray menu.
@@ -172,6 +198,29 @@ Everything below is saved to `%LOCALAPPDATA%\WebCrawler\state.json` every 30 sec
 ### Fullscreen
 
 If a screen has something fullscreen on it (a video, a game, a browser in F11), the spiders, flies and webs keep off it. A spider already there moves to another screen; if every screen is fullscreen, the spiders disappear until one is free again. Maximised windows don't count as fullscreen.
+
+## Code layout
+
+The code is split so that a creature's look and its behaviour live in separate folders, and everything shared works with any kind of creature.
+
+| Folder | What's in it |
+| --- | --- |
+| `App/` | Startup, the tray icon and menu, the main loop, saving |
+| `Core/` | Windows plumbing (`Native`, `Overlay`), the shared `World` (cursor, windows, fullscreen, your activity), `SavedState`, `Palette`, settings |
+| `Effects/` | Screen glitches |
+| `Props/` | Webs and flies |
+| `Creatures/` | `Creature` (what every creature shares: comfort, hunger, age, stats, liked and avoided places, the nest), `ICreatureAppearance`, and `CreatureFactory` |
+| `Creatures/Spider/Appearance/` | How the spider looks: `SpiderProportions` (body plan) and `SpiderAppearance` (body, legs, colours, Z's, nest pose) |
+| `Creatures/Spider/Behaviour/` | How the spider thinks and moves: `Spider` (main brain), `SpiderLegs` (gait), `SpiderLife` (moods, fidgets, affection, web upkeep, noticing you), `SpiderRecall` (where it was, favourite places) |
+| `Nest/` | The nest window and stats cards |
+
+### Adding a new creature
+
+1. Make `Creatures/YourCreature/Appearance/` with a class implementing `ICreatureAppearance` (its name, comfort colour, and how it looks curled up in the nest), plus however it draws itself on the desktop.
+2. Make `Creatures/YourCreature/Behaviour/` with a class that extends `Creature` and implements its update, rendering, entering and leaving the nest, and its memory.
+3. Give it a `KindName` and add it to `CreatureFactory`.
+
+Comfort, hunger, age, stats cards, saving and the nest work for it automatically. To restyle the spider without changing how it behaves, only edit the `Appearance` folder.
 
 ## Build
 

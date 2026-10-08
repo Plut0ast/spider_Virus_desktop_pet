@@ -6,46 +6,61 @@ namespace WebCrawler;
 static class Program
 {
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        bool openNest = args.Any(a => a.Equals("--nest", StringComparison.OrdinalIgnoreCase));
+
+        // Launching it again while it's already running opens the nest instead.
+        using var nestSignal = new EventWaitHandle(false, EventResetMode.AutoReset, "WebCrawler.OpenNest");
         using var mutex = new Mutex(true, "WebCrawler.SingleInstance", out bool first);
-        if (!first) return;
+        if (!first)
+        {
+            nestSignal.Set();
+            return;
+        }
 
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new CrawlerContext());
+        Application.Run(new CrawlerContext(nestSignal, openNest));
     }
 }
 
 sealed class CrawlerContext : ApplicationContext
 {
-    const int MaxSpiders = 6;
+    const int MaxCreatures = 6;
     const float EscHoldToQuit = 1f;
 
     readonly CrawlerSettings settings = new();
-    readonly List<Spider> spiders = new();
+    readonly List<Creature> creatures = new();
     readonly Random rng = new();
     readonly NotifyIcon tray;
+    readonly Icon icon;
     readonly System.Windows.Forms.Timer timer;
     readonly Stopwatch clock = Stopwatch.StartNew();
     readonly float scale;
     readonly World world;
-    SavedState saved = SavedState.Load();
-    float saveTimer = 30, tooltipTimer;
+    readonly EventWaitHandle nestSignal;
     readonly ToolStripMenuItem pauseItem;
+    SavedState saved = SavedState.Load();
+    NestWindow nest;
+    float saveTimer = 30, tooltipTimer;
     double last;
     float escHeld;
 
-    public CrawlerContext()
+    public CrawlerContext(EventWaitHandle nestSignal, bool openNest)
     {
+        this.nestSignal = nestSignal;
         using (var screen = Graphics.FromHwnd(IntPtr.Zero))
             scale = screen.DpiX / 96f * 1.15f;
         world = new World(settings, rng, scale);
+        icon = MakeIcon();
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Add spider", null, (_, _) => AddSpider());
-        menu.Items.Add("Remove spider", null, (_, _) => RemoveSpider());
+        menu.Items.Add("Open nest", null, (_, _) => OpenNest());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Add spider", null, (_, _) => AddCreature());
+        menu.Items.Add("Remove spider", null, (_, _) => RemoveCreature());
         menu.Items.Add(new ToolStripSeparator());
 
         var chase = new ToolStripMenuItem("Affection (follow, tap, rest)") { Checked = settings.Chase, CheckOnClick = true };
@@ -82,17 +97,17 @@ sealed class CrawlerContext : ApplicationContext
 
         tray = new NotifyIcon
         {
-            Icon = MakeIcon(),
+            Icon = icon,
             Text = "Web Crawler",
             ContextMenuStrip = menu,
             Visible = true,
         };
-        tray.DoubleClick += (_, _) => AddSpider();
+        tray.DoubleClick += (_, _) => OpenNest();
 
-        // Webs first, so a spider that was asleep in one wakes up (or rather, doesn't) in it.
+        // Webs first, so a spider that was asleep in one comes back asleep in it.
         world.LoadWebs(saved.Webs);
-        int count = Math.Clamp(saved.Spiders.Count(m => m.X != null), 1, MaxSpiders);
-        for (int i = 0; i < count; i++) AddSpider();
+        int count = Math.Clamp(saved.Spiders.Count(m => m.X != null || m.InNest), 1, MaxCreatures);
+        for (int i = 0; i < count; i++) AddCreature();
 
         // Save if Windows shuts down or you sign out while it's running.
         Microsoft.Win32.SystemEvents.SessionEnding += OnSessionEnding;
@@ -101,9 +116,11 @@ sealed class CrawlerContext : ApplicationContext
         timer.Tick += OnTick;
         timer.Start();
 
-        tray.ShowBalloonTip(4000, "Web Crawler",
-            "A spider is loose on your screen. Hold Esc for 1 second to get rid of it, or right-click the tray icon.",
-            ToolTipIcon.Info);
+        if (openNest) OpenNest();
+        else
+            tray.ShowBalloonTip(4000, "Web Crawler",
+                "A spider is loose on your screen. Hold Esc for 1 second to get rid of it, or right-click the tray icon.",
+                ToolTipIcon.Info);
     }
 
     void OnTick(object sender, EventArgs e)
@@ -111,6 +128,8 @@ sealed class CrawlerContext : ApplicationContext
         double now = clock.Elapsed.TotalSeconds;
         float dt = (float)Math.Min(0.05, now - last);
         last = now;
+
+        if (nestSignal.WaitOne(0)) OpenNest();
 
         if ((Native.GetAsyncKeyState(Native.VK_ESCAPE) & 0x8000) != 0)
         {
@@ -127,21 +146,52 @@ sealed class CrawlerContext : ApplicationContext
         if (tooltipTimer <= 0)
         {
             tooltipTimer = 1;
-            tray.Text = spiders.Count > 0 ? $"Web Crawler: comfort {spiders[0].Comfort:P0}" : "Web Crawler";
+            tray.Text = creatures.Count > 0 ? $"Web Crawler: comfort {creatures[0].Comfort:P0}" : "Web Crawler";
         }
 
+        world.NestHover = world.NestZone is RectangleF zone
+                          && creatures.Any(c => c.IsHeld)
+                          && zone.Contains(world.Cursor.X, world.Cursor.Y);
+
         world.Update(dt);
-        foreach (var spider in spiders) spider.Update(dt);
+        foreach (var c in creatures) c.Update(dt);
         world.Render();
-        foreach (var spider in spiders) spider.Render();
+        foreach (var c in creatures) c.Render();
     }
 
-    void AddSpider()
+    void OpenNest()
     {
-        if (spiders.Count >= MaxSpiders) return;
-        int slot = spiders.Count;
-        var memory = slot < saved.Spiders.Count ? saved.Spiders[slot] : new SpiderMemory();
-        spiders.Add(new Spider(world, memory));
+        if (nest == null || nest.IsDisposed)
+        {
+            nest = new NestWindow(world, () => creatures, c => nest.Wake(c), icon);
+            nest.FormClosed += (_, _) => nest = null;
+            nest.Show();
+        }
+        else
+        {
+            if (nest.WindowState == FormWindowState.Minimized) nest.WindowState = FormWindowState.Normal;
+            nest.Show();
+        }
+        nest.Activate();
+    }
+
+    void AddCreature()
+    {
+        if (creatures.Count >= MaxCreatures) return;
+        int slot = creatures.Count;
+        var memory = slot < saved.Spiders.Count ? saved.Spiders[slot] : new CreatureMemory();
+        var creature = CreatureFactory.Create(world, memory);
+        creature.Name = $"{creature.Appearance.DisplayName} {slot + 1}";
+        creatures.Add(creature);
+    }
+
+    void RemoveCreature()
+    {
+        if (creatures.Count == 0) return;
+        SaveState();
+        var leaving = creatures[^1];
+        creatures.RemoveAt(creatures.Count - 1);
+        leaving.Dispose();
     }
 
     void SaveState()
@@ -149,18 +199,18 @@ sealed class CrawlerContext : ApplicationContext
         var webs = world.SaveableWebs();
         saved.Webs = webs.Select(w => w.ToMemory()).ToList();
 
-        // Keep entries for spiders that were removed so re-adding one brings it back as it was,
-        // but they're no longer out on screen, so drop where they were standing.
-        for (int i = 0; i < saved.Spiders.Count; i++)
-            if (i >= spiders.Count)
-            {
-                saved.Spiders[i].X = saved.Spiders[i].Y = null;
-                saved.Spiders[i].Asleep = false;
-                saved.Spiders[i].SleepingInWeb = -1;
-            }
-        for (int i = 0; i < spiders.Count; i++)
+        // Keep entries for creatures that were removed so re-adding one brings it back as it was,
+        // but they're no longer out, so drop where they were.
+        for (int i = creatures.Count; i < saved.Spiders.Count; i++)
         {
-            var memory = spiders[i].GetMemory(webs);
+            saved.Spiders[i].X = saved.Spiders[i].Y = null;
+            saved.Spiders[i].Asleep = false;
+            saved.Spiders[i].InNest = false;
+            saved.Spiders[i].SleepingInWeb = -1;
+        }
+        for (int i = 0; i < creatures.Count; i++)
+        {
+            var memory = creatures[i].GetMemory(webs);
             if (i < saved.Spiders.Count) saved.Spiders[i] = memory;
             else saved.Spiders.Add(memory);
         }
@@ -171,7 +221,7 @@ sealed class CrawlerContext : ApplicationContext
 
     void ShowAbout()
     {
-        string text = spiders.Count > 0 ? spiders[0].Summary() : "No spider is out right now.";
+        string text = creatures.Count > 0 ? creatures[0].Summary() : "No spider is out right now.";
         MessageBox.Show(text, "Your spider", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
@@ -182,22 +232,13 @@ sealed class CrawlerContext : ApplicationContext
             "Forget everything?", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
         if (answer != DialogResult.Yes) return;
 
-        int count = Math.Max(1, spiders.Count);
-        foreach (var spider in spiders) spider.Dispose();
-        spiders.Clear();
+        int count = Math.Max(1, creatures.Count);
+        foreach (var c in creatures) c.Dispose();
+        creatures.Clear();
         world.ClearWebs();
         saved = new SavedState();
         saved.Save();
-        for (int i = 0; i < count; i++) AddSpider();
-    }
-
-    void RemoveSpider()
-    {
-        if (spiders.Count == 0) return;
-        SaveState();
-        var last = spiders[^1];
-        spiders.RemoveAt(spiders.Count - 1);
-        last.Dispose();
+        for (int i = 0; i < count; i++) AddCreature();
     }
 
     void Quit()
@@ -205,8 +246,9 @@ sealed class CrawlerContext : ApplicationContext
         timer.Stop();
         Microsoft.Win32.SystemEvents.SessionEnding -= OnSessionEnding;
         SaveState();
-        foreach (var spider in spiders) spider.Dispose();
-        spiders.Clear();
+        nest?.Close();
+        foreach (var c in creatures) c.Dispose();
+        creatures.Clear();
         world.Dispose();
         tray.Visible = false;
         tray.Dispose();

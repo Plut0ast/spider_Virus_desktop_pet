@@ -17,6 +17,11 @@ sealed class World : IDisposable
     public readonly List<Web> Webs = new();
 
     public Vector2 Cursor, CursorVel;
+
+    // Where on screen the open nest will take a dropped creature, and whether one is being
+    // carried over it right now. Null while the nest window is closed or minimised.
+    public RectangleF? NestZone;
+    public bool NestHover;
     Vector2 lastCursor;
     bool hasCursor;
 

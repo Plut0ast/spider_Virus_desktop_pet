@@ -16,7 +16,7 @@ sealed class Fly : IDisposable
 
     public Vector2 Pos;
     public bool Caught, Gone;
-    public Spider Hunter;
+    public Creature Hunter;
 
     readonly World world;
     readonly Random rng;

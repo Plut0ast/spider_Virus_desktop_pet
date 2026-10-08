@@ -6,18 +6,11 @@ enum Fidget { None, TapLeg, CleanLeg, Freeze, LookAround }
 
 /// <summary>
 /// The parts of the spider's life that make it feel like a creature rather than a cursor toy:
-/// mood in how it moves, idle fidgets, affection once it trusts you, web upkeep, noticing
-/// what you're doing, and a bond that fades if you leave it alone for days.
+/// mood in how it moves, idle fidgets, affection once it trusts you, web upkeep, and noticing
+/// what you're doing.
 /// </summary>
 sealed partial class Spider
 {
-    // After a full day with no kind interaction, comfort drains at this rate per real day.
-    const double NeglectGraceDays = 1;
-    const double NeglectPerDay = 0.1;
-
-    DateTime lastBond, lastDecay;
-    float neglectTimer;
-
     bool dashing;
     float dashTimer;
 
@@ -47,16 +40,7 @@ sealed partial class Spider
     bool userAway;
     Vector2 awayFrom;
 
-    // ---------- the bond over real days ----------
-
-    void ApplyNeglect(DateTime now)
-    {
-        var from = lastBond.AddDays(NeglectGraceDays);
-        if (lastDecay > from) from = lastDecay;
-        if (now <= from) return;
-        Comfort = Math.Clamp(Comfort - (float)((now - from).TotalDays * NeglectPerDay), 0, 1);
-        lastDecay = now;
-    }
+    // ---------- cooldowns, and you stepping away ----------
 
     void LifeTick(float dt)
     {
@@ -64,13 +48,6 @@ sealed partial class Spider
         peekCooldown -= dt;
         activityCooldown -= dt;
         windowReactCooldown -= dt;
-
-        neglectTimer -= dt;
-        if (neglectTimer <= 0)
-        {
-            neglectTimer = 60;
-            ApplyNeglect(DateTime.UtcNow);
-        }
 
         // Note where it was when you stepped away. If it hasn't gone far by the time
         // you're back, it has quietly moved on somewhere new.
@@ -101,12 +78,7 @@ sealed partial class Spider
             pos = p;
             vel = Vector2.Zero;
             trail.Clear();
-            foreach (var leg in legs)
-            {
-                leg.Foot = RestAt(leg, pos, heading);
-                leg.Lift = 0;
-                leg.Stepping = false;
-            }
+            ResetFeet();
             PickTarget();
             return;
         }

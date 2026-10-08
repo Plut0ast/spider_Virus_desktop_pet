@@ -35,7 +35,20 @@ abstract class Creature : IDisposable
     protected readonly CrawlerSettings settings;
     protected readonly float s;
 
-    public string Name { get; set; } = "";
+    public const int MaxNameLength = 24;
+    string name = "";
+
+    // Blank names are ignored; long ones are cut short.
+    public string Name
+    {
+        get => name;
+        set
+        {
+            var trimmed = value?.Trim();
+            if (string.IsNullOrEmpty(trimmed)) return;
+            name = trimmed.Length > MaxNameLength ? trimmed[..MaxNameLength] : trimmed;
+        }
+    }
     public abstract string Kind { get; }
     public abstract ICreatureAppearance Appearance { get; }
 
@@ -62,6 +75,7 @@ abstract class Creature : IDisposable
         settings = world.Settings;
         s = world.S;
 
+        Name = m.Name;
         Comfort = Math.Clamp(m.Comfort, 0, 1);
         lastBond = m.LastBond;
         lastDecay = m.LastDecay;
@@ -164,6 +178,7 @@ abstract class Creature : IDisposable
     protected CreatureMemory BaseMemory() => new()
     {
         Kind = Kind,
+        Name = Name,
         Comfort = Comfort,
         LastBond = lastBond,
         LastDecay = lastDecay,

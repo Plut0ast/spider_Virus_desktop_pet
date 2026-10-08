@@ -8,6 +8,8 @@ sealed class CreatureMemory
 {
     // Which kind of creature this is, so the right one is recreated (see CreatureFactory).
     public string Kind { get; set; } = CreatureFactory.DefaultKind;
+    // The name you gave it, or null for the default ("Spider 1").
+    public string Name { get; set; }
 
     // 0 is wary (red), 1 is at ease (green).
     public float Comfort { get; set; }

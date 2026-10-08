@@ -146,7 +146,9 @@ sealed class CrawlerContext : ApplicationContext
         if (tooltipTimer <= 0)
         {
             tooltipTimer = 1;
-            tray.Text = creatures.Count > 0 ? $"Web Crawler: comfort {creatures[0].Comfort:P0}" : "Web Crawler";
+            string text = creatures.Count > 0 ? $"{creatures[0].Name}: comfort {creatures[0].Comfort:P0}" : "Web Crawler";
+            // The tray tooltip can't be longer than 63 characters.
+            tray.Text = text.Length > 63 ? text[..63] : text;
         }
 
         world.NestHover = world.NestZone is RectangleF zone
@@ -165,6 +167,8 @@ sealed class CrawlerContext : ApplicationContext
         {
             nest = new NestWindow(world, () => creatures, icon);
             nest.FormClosed += (_, _) => nest = null;
+            // Save a rename straight away rather than waiting for the next autosave.
+            nest.Renamed += SaveState;
             nest.Show();
         }
         else
@@ -181,7 +185,7 @@ sealed class CrawlerContext : ApplicationContext
         int slot = creatures.Count;
         var memory = slot < saved.Spiders.Count ? saved.Spiders[slot] : new CreatureMemory();
         var creature = CreatureFactory.Create(world, memory);
-        creature.Name = $"{creature.Appearance.DisplayName} {slot + 1}";
+        if (string.IsNullOrEmpty(creature.Name)) creature.Name = $"{creature.Appearance.DisplayName} {slot + 1}";
         creatures.Add(creature);
     }
 

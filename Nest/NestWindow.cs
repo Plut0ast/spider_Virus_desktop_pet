@@ -24,6 +24,10 @@ sealed class NestWindow : Form
     public IReadOnlyList<Creature> Everyone => allCreatures();
     public List<Creature> Sleepers => allCreatures().Where(c => c.InNest).ToList();
 
+    // Raised when a creature is renamed on its tag, so it can be saved straight away.
+    public event Action Renamed;
+    public void NotifyRenamed() => Renamed?.Invoke();
+
     public NestWindow(World world, Func<IReadOnlyList<Creature>> creatures, Icon icon)
     {
         World = world;
@@ -479,6 +483,11 @@ sealed class TagsView : Control
     readonly Font nameFont = new("Consolas", 12f, FontStyle.Bold);
     readonly Font bodyFont = new("Consolas", 9f);
 
+    // Clicking a name on a tag lets you rename that creature in place.
+    readonly List<(Creature Who, Rectangle Area)> nameAreas = new();
+    Creature hoverName, editing;
+    TextBox editor;
+
     public TagsView(NestWindow owner)
     {
         this.owner = owner;
@@ -504,6 +513,7 @@ sealed class TagsView : Control
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         g.Clear(Palette.WindowBack);
+        nameAreas.Clear();
 
         var sleepers = owner.Sleepers;
         if (sleepers.Count == 0)
@@ -535,6 +545,7 @@ sealed class TagsView : Control
             g.RotateTransform(tilt);
             DrawTag(g, c, lines, index, w, h);
             g.Restore(state);
+            nameAreas.Add((c, new Rectangle(Pad + 6 + Cut + 15, y + 21, w - Cut - 40, 26)));
 
             threadTopY = y + h - 4;
             y += h + Gap;
@@ -572,6 +583,13 @@ sealed class TagsView : Control
         g.DrawString($"No. {index + 1:000}", smallFont, inkMuted, left, 8);
         g.DrawString(c.Appearance.Taxon.ToUpperInvariant(), smallFont, inkMuted, new RectangleF(0, 8, w - 12, 14), right);
         g.DrawString(c.Name, nameFont, ink, left - 1, 24);
+        if (c == hoverName && editing == null)
+        {
+            // A dotted underline hints that the name can be changed.
+            float width = g.MeasureString(c.Name, nameFont).Width;
+            using var dots = new Pen(Color.FromArgb(150, Palette.Ink), 1f) { DashStyle = DashStyle.Dot };
+            g.DrawLine(dots, left + 2, 44, left + width - 4, 44);
+        }
         using (var rule = new Pen(Color.FromArgb(110, Palette.Ink), 0.8f))
             g.DrawLine(rule, left, HeaderHeight - 10, w - 12, HeaderHeight - 10);
 
@@ -603,6 +621,81 @@ sealed class TagsView : Control
             }
             rowY += RowHeight;
         }
+    }
+
+    // ---------- renaming ----------
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        Creature over = null;
+        foreach (var (who, area) in nameAreas)
+            if (area.Contains(e.Location)) { over = who; break; }
+        if (over == hoverName) return;
+        hoverName = over;
+        Cursor = over != null ? Cursors.Hand : Cursors.Default;
+        Invalidate();
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (hoverName == null) return;
+        hoverName = null;
+        Invalidate();
+    }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (e.Button != MouseButtons.Left) return;
+        foreach (var (who, area) in nameAreas)
+            if (area.Contains(e.Location)) { BeginRename(who, area); return; }
+    }
+
+    void BeginRename(Creature who, Rectangle area)
+    {
+        if (editor == null)
+        {
+            editor = new TextBox
+            {
+                BorderStyle = BorderStyle.None,
+                Font = nameFont,
+                BackColor = Palette.Paper,
+                ForeColor = Palette.Ink,
+                MaxLength = Creature.MaxNameLength,
+            };
+            editor.KeyDown += (_, e) =>
+            {
+                if (e.KeyCode is not (Keys.Enter or Keys.Escape)) return;
+                e.SuppressKeyPress = true;
+                EndRename(e.KeyCode == Keys.Enter);
+            };
+            editor.Leave += (_, _) => EndRename(true);
+            Controls.Add(editor);
+        }
+
+        editing = who;
+        editor.Bounds = new Rectangle(area.X, area.Y + 2, area.Width, area.Height - 2);
+        editor.Text = who.Name;
+        editor.Visible = true;
+        editor.Focus();
+        editor.SelectAll();
+        Invalidate();
+    }
+
+    void EndRename(bool keep)
+    {
+        if (editing == null) return;
+        var who = editing;
+        editing = null;
+        if (keep && !string.IsNullOrWhiteSpace(editor.Text) && editor.Text.Trim() != who.Name)
+        {
+            who.Name = editor.Text;
+            owner.NotifyRenamed();
+        }
+        editor.Visible = false;
+        Invalidate();
     }
 
     // A little stomach outline, filled from the bottom by how full it is.

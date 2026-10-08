@@ -47,10 +47,9 @@ sealed partial class Spider : Creature
     readonly Font labelFont;
     readonly Leg[] legs = new Leg[8];
     readonly List<Glitch> glitches = new();
-    readonly List<Vector2> trail = new();
 
     Vector2 pos, vel, target;
-    float heading, angVel, time, pauseLeft, ambientTimer, trailTimer, topTimer;
+    float heading, angVel, time, pauseLeft, ambientTimer, topTimer;
 
     Mode mode = Mode.Wander;
     float modeLeft;
@@ -94,7 +93,6 @@ sealed partial class Spider : Creature
         pose.Scale = s;
         pose.Rng = rng;
         pose.Legs = legs;
-        pose.Trail = trail;
         pose.Glitches = glitches;
 
         RestorePlace(memory);
@@ -119,7 +117,6 @@ sealed partial class Spider : Creature
         mode = Mode.Wander;
         speedMul = 1;
         extraH = 0;
-        trail.Clear();
         ResetFeet();
     }
 
@@ -154,7 +151,6 @@ sealed partial class Spider : Creature
         // Being tucked in gently is a kindness.
         AddComfort(0.02f);
         ClearGlitches();
-        trail.Clear();
         win.SetClickThrough(true);
         win.Hide();
     }
@@ -166,7 +162,6 @@ sealed partial class Spider : Creature
         heading = (float)(rng.NextDouble() * Math.PI * 2);
         vel = Vector2.Zero;
         extraH = 0;
-        trail.Clear();
         ResetFeet();
         // Wakes up slowly and has a little groom before setting off.
         StartGroom();
@@ -178,7 +173,6 @@ sealed partial class Spider : Creature
     {
         InNest = false;
         vel = Vector2.Zero;
-        trail.Clear();
         mode = Mode.Held;
         grabOffset = Vector2.Zero;
         hVel = 0;
@@ -266,14 +260,6 @@ sealed partial class Spider : Creature
 
         if (mode is Mode.Held or Mode.Thrown) UpdateLegsAirborne(dt);
         else UpdateLegs(dt);
-
-        trailTimer -= dt;
-        if (trailTimer <= 0)
-        {
-            trailTimer = 0.03f;
-            trail.Add(pos);
-            if (trail.Count > 70) trail.RemoveAt(0);
-        }
 
         ambientTimer -= dt;
         if (ambientTimer <= 0)

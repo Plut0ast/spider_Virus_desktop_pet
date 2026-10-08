@@ -77,7 +77,6 @@ sealed partial class Spider
             DropTasks();
             pos = p;
             vel = Vector2.Zero;
-            trail.Clear();
             ResetFeet();
             PickTarget();
             return;

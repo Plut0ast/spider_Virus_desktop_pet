@@ -13,7 +13,6 @@ sealed class SpiderPose
     public float Scale;
     public Random Rng;
     public Leg[] Legs;
-    public List<Vector2> Trail;
     public List<Glitch> Glitches;
 
     public Vector2 Pos, Mouth, Cursor;
@@ -50,15 +49,6 @@ sealed class SpiderAppearance : ICreatureAppearance
     void DrawThreads(Graphics g, Point o, SpiderPose p)
     {
         float s = p.Scale;
-
-        // Dragline left behind.
-        if (p.Trail.Count > 1)
-        {
-            using var pen = new Pen(Color.FromArgb(45, Palette.Line), 1f);
-            var pts = new PointF[p.Trail.Count];
-            for (int i = 0; i < p.Trail.Count; i++) pts[i] = L(p.Trail[i], o);
-            g.DrawLines(pen, pts);
-        }
 
         var body = new Vector2(p.Pos.X, p.Pos.Y - p.BodyHeight * Tilt);
         using var nodeFill = new SolidBrush(Color.FromArgb(230, Palette.NodeFill));

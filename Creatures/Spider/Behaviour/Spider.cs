@@ -174,6 +174,25 @@ sealed partial class Spider : Creature
         win.KeepOnTop();
     }
 
+    public override void LiftOutOfNest(Vector2 cursor)
+    {
+        InNest = false;
+        vel = Vector2.Zero;
+        trail.Clear();
+        mode = Mode.Held;
+        grabOffset = Vector2.Zero;
+        hVel = 0;
+        extraH = 30 * s;
+        pos = cursor + new Vector2(0, CurrentBodyHeight() * Tilt);
+        ResetFeet();
+        // Treated as a press that's still held down, so letting go throws, drops, or tucks it back in.
+        pressed = true;
+        pressTime = time;
+        pressCursor = cursor;
+        win.Show();
+        win.KeepOnTop();
+    }
+
     // ---------- main loop ----------
 
     public override void Update(float dt)

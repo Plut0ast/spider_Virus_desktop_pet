@@ -84,6 +84,8 @@ abstract class Creature : IDisposable
     public abstract void EnterNest();
     // Woken from the nest and set down at a screen position.
     public abstract void LeaveNest(Vector2 at);
+    // Dragged out of the nest: it comes out already held by the cursor at this screen position.
+    public abstract void LiftOutOfNest(Vector2 cursor);
     public abstract CreatureMemory GetMemory(List<Web> savedWebs);
     public abstract void Dispose();
 

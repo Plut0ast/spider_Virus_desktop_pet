@@ -226,6 +226,11 @@ sealed class NestView : Control
     int shapeScruff = -1;
     int hoverSlot = -1;
 
+    // Pressing on a sleeper and moving a little lifts it out of the nest onto the cursor.
+    Creature pressedOn;
+    Point pressPoint;
+    bool draggedOut;
+
     public NestView(NestWindow owner)
     {
         this.owner = owner;
@@ -354,7 +359,7 @@ sealed class NestView : Control
         if (sleepers.Count == 0)
             g.DrawString("carry a spider here\nand let go", font, muted, new RectangleF(c.X - Rx, c.Y - Ry * 0.8f, Rx * 2, Ry * 1.2f), centre);
 
-        string caption = hoverSlot >= 0 && hoverSlot < sleepers.Count ? $"click to wake {sleepers[hoverSlot].Name.ToLowerInvariant()}"
+        string caption = hoverSlot >= 0 && hoverSlot < sleepers.Count ? $"click to wake {sleepers[hoverSlot].Name.ToLowerInvariant()}, or drag it out"
                        : sleepers.Count == 0 ? "empty"
                        : sleepers.Count == 1 ? "1 asleep" : $"{sleepers.Count} asleep";
         g.DrawString(caption, font, muted, new RectangleF(0, Height - 24, Width, 20), centre);
@@ -400,9 +405,39 @@ sealed class NestView : Control
         g.FillRectangle(cyan, at.X + 4 - jx, at.Y + 2, 5, 2);
     }
 
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        draggedOut = false;
+        var sleepers = owner.Sleepers;
+        pressedOn = e.Button == MouseButtons.Left && hoverSlot >= 0 && hoverSlot < sleepers.Count ? sleepers[hoverSlot] : null;
+        pressPoint = e.Location;
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        pressedOn = null;
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+
+        if (pressedOn != null && e.Button == MouseButtons.Left
+            && Math.Abs(e.X - pressPoint.X) + Math.Abs(e.Y - pressPoint.Y) > 6)
+        {
+            // Out it comes, dangling from the cursor. Letting go is handled by the creature itself.
+            var screen = PointToScreen(e.Location);
+            pressedOn.LiftOutOfNest(new Vector2(screen.X, screen.Y));
+            pressedOn = null;
+            draggedOut = true;
+            Capture = false;
+            hoverSlot = -1;
+            Cursor = Cursors.Default;
+            return;
+        }
+
         var sleepers = owner.Sleepers;
         float size = SlotSize(sleepers.Count);
         var c = Centre(owner.Time, false);
@@ -425,7 +460,7 @@ sealed class NestView : Control
     protected override void OnMouseClick(MouseEventArgs e)
     {
         base.OnMouseClick(e);
-        if (e.Button != MouseButtons.Left || hoverSlot < 0) return;
+        if (e.Button != MouseButtons.Left || hoverSlot < 0 || draggedOut) return;
         var sleepers = owner.Sleepers;
         if (hoverSlot < sleepers.Count) owner.Wake(sleepers[hoverSlot]);
         hoverSlot = -1;

@@ -47,8 +47,6 @@ sealed partial class Spider
     bool userAway;
     Vector2 awayFrom;
 
-    public SpiderMemory Memory => new() { Comfort = Comfort, LastBond = lastBond, LastDecay = lastDecay };
-
     // ---------- the bond over real days ----------
 
     void ApplyNeglect(DateTime now)
@@ -358,6 +356,7 @@ sealed partial class Spider
         if (d > 1 && fidget != Fidget.LookAround)
             heading += WrapAngle(MathF.Atan2(to.Y, to.X) - heading) * Math.Min(1, dt * 1.5f);
         modeLeft -= dt;
+        if (modeLeft <= 0) Remember(favourites, pos); // a nice spot to sit with you
         if (modeLeft <= 0 || d > 320 * s) PickTarget();
     }
 

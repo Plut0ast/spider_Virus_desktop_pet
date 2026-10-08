@@ -140,8 +140,7 @@ sealed partial class Spider : IDisposable
             legs[i] = leg;
         }
 
-        var screens = world.UsableScreens();
-        EnterFrom(screens.Length > 0 ? screens[rng.Next(screens.Length)] : Screen.AllScreens[0]);
+        Restore(memory);
 
         win.Cursor = Cursors.Hand;
         win.MouseDown += OnMouseDown;
@@ -309,6 +308,7 @@ sealed partial class Spider : IDisposable
         if (mode is not (Mode.Flee or Mode.Dizzy) && !drowsy && !world.Selecting && CursorThreat())
         {
             AddComfort(-0.02f);
+            Remember(scary, pos);
             StartFlee(1.1f * (1 + Wariness()));
             return;
         }
@@ -398,7 +398,12 @@ sealed partial class Spider : IDisposable
                 float want = MathF.Atan2(cornerInward.Y, cornerInward.X);
                 heading += WrapAngle(want - heading) * Math.Min(1, dt * 4);
                 modeLeft -= dt;
-                if (modeLeft <= 0) PickTarget();
+                if (modeLeft <= 0)
+                {
+                    // Hid here in peace: a good spot to come back to.
+                    Remember(favourites, pos);
+                    PickTarget();
+                }
                 break;
             }
 
@@ -470,6 +475,9 @@ sealed partial class Spider : IDisposable
             return;
         }
 
+        // Now and then it heads back to a place it likes.
+        if (rng.NextDouble() < 0.2 && TryGoToFavourite()) return;
+
         var screens = world.UsableScreens();
         if (screens.Length == 0) return;
         for (int tries = 0; tries < 20; tries++)
@@ -489,6 +497,7 @@ sealed partial class Spider : IDisposable
                 c = new Vector2(b.Left + (float)rng.NextDouble() * b.Width, b.Top + (float)rng.NextDouble() * b.Height);
             }
 
+            if (NearScarySpot(c)) continue;
             foreach (var sc in screens)
             {
                 var b = Rectangle.Inflate(sc.Bounds, (int)(-30 * s), (int)(-30 * s));
@@ -597,6 +606,7 @@ sealed partial class Spider : IDisposable
             return;
         }
         // No desktop showing anywhere: curl up where it is.
+        naps++;
         mode = Mode.Sleep;
     }
 
@@ -726,7 +736,8 @@ sealed partial class Spider : IDisposable
         if (webCooldown > 0 || world.Webs.Count >= MaxWebs) return false;
         webCooldown = 5; // try again soon if no good spot turns up
         float radius = (55 + (float)rng.NextDouble() * 45) * s;
-        if (!world.Windows.TryFindWebSpot(rng, radius, out var hub)) return false;
+        // Prefers to build somewhere it has slept or rested before.
+        if (!TryFavouriteWebSpot(radius, out var hub) && !world.Windows.TryFindWebSpot(rng, radius, out hub)) return false;
 
         spinHub = hub;
         spinRadius = radius;
@@ -776,6 +787,8 @@ sealed partial class Spider : IDisposable
                     spinStage = 0;
                     sleepAfterSpin = false;
                     mode = Mode.Sleep;
+                    naps++;
+                    Remember(favourites, pos);
                     return;
                 }
                 if (web.Progress >= 1)
@@ -874,6 +887,7 @@ sealed partial class Spider : IDisposable
             for (int i = 0; i < 3; i++)
                 glitches.Add(Glitch.Spawn(rng, Mouth + RandomInDisk(20 * s), s));
 
+        fliesEaten++;
         // A good meal, better still one stored in its own web.
         AddComfort(home != null ? 0.06f : 0.05f);
         huntCooldown = 12 + (float)rng.NextDouble() * 10;
@@ -922,6 +936,7 @@ sealed partial class Spider : IDisposable
         else
         {
             AddComfort(-0.03f);
+            Remember(scary, pos);
             Startle();
         }
     }
@@ -956,6 +971,11 @@ sealed partial class Spider : IDisposable
         afterLanding = speed > 500 * s ? Mode.Dizzy : Mode.Wander;
         // Set down gently it trusts you a little more; hurled across the screen, a lot less.
         AddComfort(speed > 500 * s ? -0.06f : 0.01f);
+        if (speed > 500 * s)
+        {
+            timesThrown++;
+            Remember(scary, pos);
+        }
         mode = Mode.Thrown;
     }
 

@@ -37,6 +37,8 @@ Press **Win + R**, type `shell:startup`, press Enter, and put a shortcut to `pub
 - **Release a fly**: sends a fly onto the desktop straight away.
 - **Clear webs**: removes every web.
 - **Glitch intensity**: Low, Medium or High.
+- **About your spider**: its age, mood, comfort, flies eaten, naps, times thrown, and how many places it likes and avoids.
+- **Forget everything**: after you confirm, the spiders forget you and start over as wary strangers, and their webs are cleared.
 - **Pause** and **Quit**.
 
 ## Behaviour
@@ -154,6 +156,18 @@ Press and drag it and it hangs from the cursor on a thread, legs kicking, body s
 - **When you're away**: after a minute without input it ranges much further across your screens. If you come back after more than two minutes and it hasn't gone far, you'll find it somewhere new.
 
 These only use whether there has been keyboard or mouse input and where windows are. It never reads what you type.
+
+### Memory
+
+Everything below is saved to `%LOCALAPPDATA%\WebCrawler\state.json` every 30 seconds, when you quit, and when Windows shuts down or you sign out. When you open the app again, each spider carries on where it left off.
+
+- **Where it was**: it reappears in the same spot, facing the same way (or walks in from a screen edge if that spot is now off-screen or fullscreen). If it was asleep, it's still asleep, in the same web.
+- **Its webs**: finished webs come back in the same places with the same shape, along with any flies wrapped up on them.
+- **Comfort and the bond**: its comfort, and when you last did something it liked, so the colour carries over and neglect keeps counting while the app is closed.
+- **Favourite spots**: places where it slept, finished hiding in peace, or rested near you. It wanders back to them now and then and prefers to build webs there. A spot is forgotten after two weeks without a visit.
+- **Places it avoids**: where it was thrown hard, clicked to startle it, or scared by a cursor rush. It won't pick those as places to walk to. It forgets them after three days.
+- **Its life story**: when it was born, flies eaten, naps and times thrown. See **About your spider** in the tray menu.
+- **How many spiders were out**: the same number come back.
 
 ### Fullscreen
 

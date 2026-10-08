@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace WebCrawler;
 
-/// <summary>What one spider remembers about you.</summary>
+/// <summary>What one spider remembers.</summary>
 sealed class SpiderMemory
 {
     // 0 is wary (red), 1 is at ease (green).
@@ -12,15 +12,56 @@ sealed class SpiderMemory
     public DateTime LastBond { get; set; } = DateTime.UtcNow;
     // How far the fading has already been applied, so it isn't counted twice.
     public DateTime LastDecay { get; set; } = DateTime.UtcNow;
+
+    public DateTime Born { get; set; } = DateTime.UtcNow;
+    public int FliesEaten { get; set; }
+    public int TimesThrown { get; set; }
+    public int Naps { get; set; }
+
+    // Where it was and what it was doing when the app closed.
+    public float? X { get; set; }
+    public float? Y { get; set; }
+    public float Heading { get; set; }
+    public bool Asleep { get; set; }
+    public int SleepingInWeb { get; set; } = -1; // index into SavedState.Webs
+
+    // Places it slept, hid or rested in peace, and places something bad happened.
+    public List<RememberedSpot> Favourites { get; set; } = new();
+    public List<RememberedSpot> Scary { get; set; } = new();
+}
+
+sealed class RememberedSpot
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public DateTime When { get; set; }
+}
+
+/// <summary>A finished web, rebuilt identically from its seed.</summary>
+sealed class WebMemory
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Radius { get; set; }
+    public int Seed { get; set; }
+    public float Age { get; set; }
+    public List<SavedPoint> Bundles { get; set; } = new();
+}
+
+sealed class SavedPoint
+{
+    public float X { get; set; }
+    public float Y { get; set; }
 }
 
 /// <summary>
-/// What the spiders remember between runs, kept in %LOCALAPPDATA%\WebCrawler\state.json.
+/// Everything remembered between runs, kept in %LOCALAPPDATA%\WebCrawler\state.json.
 /// </summary>
 sealed class SavedState
 {
     // One entry per spider, in the order they were added.
     public List<SpiderMemory> Spiders { get; set; } = new();
+    public List<WebMemory> Webs { get; set; } = new();
 
     // Older save files only stored a comfort value per spider.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -51,7 +92,10 @@ sealed class SavedState
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this));
+            // Write to a temporary file first so a shutdown mid-save can't leave a half-written memory.
+            string temp = FilePath + ".tmp";
+            File.WriteAllText(temp, JsonSerializer.Serialize(this));
+            File.Move(temp, FilePath, overwrite: true);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }

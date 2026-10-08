@@ -42,21 +42,26 @@ sealed class Web : IDisposable
     bool dirty = true;
     int lastAlpha = -1;
 
-    public Web(Vector2 hub, float radius, Random rng, float s)
+    public readonly int Seed;
+
+    public Web(Vector2 hub, float radius, Random rng, float s, int? seed = null)
     {
+        // The web's shape comes from its own seed, so a saved web can be rebuilt exactly.
+        Seed = seed ?? rng.Next();
+        var shape = new Random(Seed);
         Hub = hub;
         Radius = radius;
         this.s = s;
         this.rng = rng;
 
-        int n = 11 + rng.Next(4);
+        int n = 11 + shape.Next(4);
         spokes = new float[n];
         spokeLen = new float[n];
-        float start = (float)(rng.NextDouble() * Math.PI * 2);
+        float start = (float)(shape.NextDouble() * Math.PI * 2);
         float gap = MathF.PI * 2 / n;
         for (int i = 0; i < n; i++)
         {
-            spokes[i] = start + i * gap + ((float)rng.NextDouble() - 0.5f) * 0.25f * gap;
+            spokes[i] = start + i * gap + ((float)shape.NextDouble() - 0.5f) * 0.25f * gap;
             spokeLen[i] = 1;
         }
 
@@ -65,7 +70,7 @@ sealed class Web : IDisposable
         broken = new bool[rings, n];
         for (int r = 0; r < rings; r++)
         for (int i = 0; i < n; i++)
-            jitter[r, i] = 0.95f + (float)rng.NextDouble() * 0.1f;
+            jitter[r, i] = 0.95f + (float)shape.NextDouble() * 0.1f;
 
         size = (int)(radius * 2 + 24 * s);
         bmp = new Bitmap(size, size, PixelFormat.Format32bppPArgb);
@@ -104,6 +109,24 @@ sealed class Web : IDisposable
     }
 
     public bool Finished => Progress >= 1 && !clearing;
+
+    public WebMemory ToMemory() => new()
+    {
+        X = Hub.X,
+        Y = Hub.Y,
+        Radius = Radius,
+        Seed = Seed,
+        Age = age,
+        Bundles = bundles.Select(b => new SavedPoint { X = b.X, Y = b.Y }).ToList(),
+    };
+
+    public void Restore(WebMemory m)
+    {
+        Progress = 1;
+        age = m.Age;
+        foreach (var b in m.Bundles) bundles.Add(new Vector2(b.X, b.Y));
+        dirty = true;
+    }
     public bool Damaged => Finished && health < ClicksToClear;
     public float SinceDamage => sinceDamage;
 

@@ -31,7 +31,7 @@ sealed class CrawlerContext : ApplicationContext
     readonly Stopwatch clock = Stopwatch.StartNew();
     readonly float scale;
     readonly World world;
-    readonly SavedState saved = SavedState.Load();
+    SavedState saved = SavedState.Load();
     float saveTimer = 30, tooltipTimer;
     readonly ToolStripMenuItem pauseItem;
     double last;
@@ -76,6 +76,8 @@ sealed class CrawlerContext : ApplicationContext
         menu.Items.Add(pauseItem);
 
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("About your spider", null, (_, _) => ShowAbout());
+        menu.Items.Add("Forget everything", null, (_, _) => ForgetEverything());
         menu.Items.Add("Quit", null, (_, _) => Quit());
 
         tray = new NotifyIcon
@@ -87,7 +89,13 @@ sealed class CrawlerContext : ApplicationContext
         };
         tray.DoubleClick += (_, _) => AddSpider();
 
-        AddSpider();
+        // Webs first, so a spider that was asleep in one wakes up (or rather, doesn't) in it.
+        world.LoadWebs(saved.Webs);
+        int count = Math.Clamp(saved.Spiders.Count(m => m.X != null), 1, MaxSpiders);
+        for (int i = 0; i < count; i++) AddSpider();
+
+        // Save if Windows shuts down or you sign out while it's running.
+        Microsoft.Win32.SystemEvents.SessionEnding += OnSessionEnding;
 
         timer = new System.Windows.Forms.Timer { Interval = 15 };
         timer.Tick += OnTick;
@@ -138,13 +146,49 @@ sealed class CrawlerContext : ApplicationContext
 
     void SaveState()
     {
-        // Keep entries for spiders that were removed so re-adding one brings it back as it was.
+        var webs = world.SaveableWebs();
+        saved.Webs = webs.Select(w => w.ToMemory()).ToList();
+
+        // Keep entries for spiders that were removed so re-adding one brings it back as it was,
+        // but they're no longer out on screen, so drop where they were standing.
+        for (int i = 0; i < saved.Spiders.Count; i++)
+            if (i >= spiders.Count)
+            {
+                saved.Spiders[i].X = saved.Spiders[i].Y = null;
+                saved.Spiders[i].Asleep = false;
+                saved.Spiders[i].SleepingInWeb = -1;
+            }
         for (int i = 0; i < spiders.Count; i++)
         {
-            if (i < saved.Spiders.Count) saved.Spiders[i] = spiders[i].Memory;
-            else saved.Spiders.Add(spiders[i].Memory);
+            var memory = spiders[i].GetMemory(webs);
+            if (i < saved.Spiders.Count) saved.Spiders[i] = memory;
+            else saved.Spiders.Add(memory);
         }
         saved.Save();
+    }
+
+    void OnSessionEnding(object sender, Microsoft.Win32.SessionEndingEventArgs e) => SaveState();
+
+    void ShowAbout()
+    {
+        string text = spiders.Count > 0 ? spiders[0].Summary() : "No spider is out right now.";
+        MessageBox.Show(text, "Your spider", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    void ForgetEverything()
+    {
+        var answer = MessageBox.Show(
+            "Your spiders will forget you and start over as wary strangers, and their webs will be cleared. This can't be undone.",
+            "Forget everything?", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes) return;
+
+        int count = Math.Max(1, spiders.Count);
+        foreach (var spider in spiders) spider.Dispose();
+        spiders.Clear();
+        world.ClearWebs();
+        saved = new SavedState();
+        saved.Save();
+        for (int i = 0; i < count; i++) AddSpider();
     }
 
     void RemoveSpider()
@@ -159,6 +203,7 @@ sealed class CrawlerContext : ApplicationContext
     void Quit()
     {
         timer.Stop();
+        Microsoft.Win32.SystemEvents.SessionEnding -= OnSessionEnding;
         SaveState();
         foreach (var spider in spiders) spider.Dispose();
         spiders.Clear();

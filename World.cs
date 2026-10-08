@@ -105,6 +105,19 @@ sealed class World : IDisposable
         foreach (var fly in Flies) fly.Render();
     }
 
+    public void LoadWebs(List<WebMemory> saved)
+    {
+        foreach (var m in saved)
+        {
+            var web = new Web(new Vector2(m.X, m.Y), m.Radius, Rng, S, m.Seed);
+            web.Restore(m);
+            Webs.Add(web);
+        }
+    }
+
+    // Only finished webs are worth remembering.
+    public List<Web> SaveableWebs() => Webs.Where(w => w.Finished).ToList();
+
     public void SpawnFly()
     {
         if (Windows.TryFindFreeDesktopPoint(Rng, out var start)) Flies.Add(new Fly(this, start));
